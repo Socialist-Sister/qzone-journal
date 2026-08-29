@@ -1,0 +1,14 @@
+node_modules/
+.pnpm-store/
+dist/
+release/
+audit/
+tests/audit-capture.cjs
+.design-references/
+implementation-*.png
+design-comparison-*.jpg
+design-qa*.png
+design-reference-normalized.png
+review-titlebar-crop.png
+AGENTS.md
+*.log

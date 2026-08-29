@@ -1,0 +1,29 @@
+# Local archive schema
+
+The archive is a user-owned directory, not an application database. Schema changes are versioned through `manifest.json.schemaVersion` and must remain migratable.
+
+```text
+QQ-{uin}/
+├─ manifest.json
+├─ records/
+│  ├─ entries/       # one normalized post, journal, or album per JSON file
+│  └─ people/        # reserved for deduplicated commenter/liker profiles
+├─ media/
+│  ├─ index.json     # source-to-local media mapping and future integrity metadata
+│  └─ files/         # downloaded images and videos
+├─ state/
+│  └─ checkpoint.json
+└─ diagnostics/
+   ├─ session-check.json
+   └─ collection-plan.json
+```
+
+## Invariants
+
+- JSON files are written through a temporary sibling and atomically renamed into place.
+- Entry filenames are SHA-256 hashes of `type:sourceId`; titles are optional because QQ status posts are normally titleless.
+- Raw cookies, passwords, API keys, and browser storage are never written into an archive.
+- `state/checkpoint.json` records the active phase and future per-endpoint cursors so an interrupted job can resume without duplicating completed pages.
+- Media bytes and their index are separate from normalized content records so exports can choose whether to embed, link, or omit originals.
+- Endpoint responses are normalized at the collector boundary. UI and export code consume the local schema rather than depending on QQ response shapes.
+- `archive-index.json` lives in Electron user data and points to the most recently completed archive. It contains only the local path and masked account label, allowing the UI to reopen an archive without restoring a QQ session.

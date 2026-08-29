@@ -1,0 +1,186 @@
+const { ArchiveStore } = require("../archive/store.cjs");
+const { abortableDelay, createCollectionPlan, downloadMedia, fetchMoodPage, probeSession } = require("./qzone-adapter.cjs");
+const { isAuthenticationFailure } = require("./qzone-parser.cjs");
+
+const parentPort = process.parentPort;
+if (!parentPort) throw new Error("采集器必须由 Electron Utility Process 启动");
+
+let activeJob = null;
+let activeAbortController = null;
+
+function emit(type, payload = {}) {
+  parentPort.postMessage({ type, ...payload });
+}
+
+function throwIfCancelled() {
+  if (!activeAbortController?.signal.aborted) return;
+  const error = new Error("采集任务已取消");
+  error.name = "AbortError";
+  throw error;
+}
+
+async function mapWithConcurrency(items, limit, mapper) {
+  const results = new Array(items.length);
+  let nextIndex = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (nextIndex < items.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await mapper(items[index], index);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
+async function run(job) {
+  if (activeJob) throw new Error("采集进程中已有任务正在运行");
+  activeJob = job;
+  activeAbortController = new AbortController();
+  const store = new ArchiveStore(job.archiveRoot);
+  let counts = { entries: 0, media: 0, mediaBytes: 0, comments: 0, likes: 0 };
+  const mediaFailures = [];
+  const pageDiagnostics = [];
+  let activeCursors = {};
+
+  try {
+    emit("progress", { jobId: job.jobId, progress: 5, phase: "initializing", message: "正在建立本地归档目录…" });
+    const previousCheckpoint = await store.readCheckpoint();
+    await store.initialize({ ownerUin: job.ownerUin, jobId: job.jobId, options: job.options });
+    counts = await store.summarize();
+    const canResume = ["collecting_posts", "cancelled", "failed"].includes(previousCheckpoint?.phase);
+    const resumeCursor = canResume ? String(previousCheckpoint?.cursors?.posts || "") : "";
+    const resumeScope = canResume && Number(previousCheckpoint?.cursors?.postScope) === 0 ? 0 : 1;
+    activeCursors = { posts: resumeCursor, postScope: resumeScope };
+    throwIfCancelled();
+    await store.writeCheckpoint({ jobId: job.jobId, phase: "session_check", cursors: activeCursors, counts });
+
+    emit("progress", { jobId: job.jobId, progress: 24, phase: "session_check", message: "正在确认 QQ 登录会话…" });
+    const sessionProbe = job.testMode
+      ? { ok: true, status: 200, finalHost: "user.qzone.qq.com", checkedAt: new Date().toISOString(), testMode: true }
+      : await probeSession({ uin: job.ownerUin, signal: activeAbortController.signal });
+    throwIfCancelled();
+    await store.writeDiagnostic("session-check", sessionProbe);
+
+    emit("progress", { jobId: job.jobId, progress: 30, phase: "planning", message: "正在准备增量采集计划…" });
+    const plan = createCollectionPlan(job.options);
+    throwIfCancelled();
+    await store.writeDiagnostic("collection-plan", { items: plan });
+    let cursor = resumeCursor;
+    let feedScope = resumeScope;
+    activeCursors = { posts: cursor, postScope: feedScope };
+    await store.writeCheckpoint({ jobId: job.jobId, phase: "adapter_ready", cursors: activeCursors, counts });
+
+    const needsPostStream = job.options.items.some((item) => ["posts", "comments", "likes"].includes(item));
+    if (needsPostStream) {
+      let pageNumber = 0;
+      let processedEntries = 0;
+      let hasMore = true;
+      const seenCursors = new Set();
+      while (hasMore && pageNumber < 500) {
+        throwIfCancelled();
+        pageNumber += 1;
+        const page = job.testMode
+          ? { entries: pageNumber === 1 ? job.testEntries || [] : [], rawCount: pageNumber === 1 ? (job.testEntries || []).length : 0, hasMore: false, cursor: "" }
+          : await fetchMoodPage({ uin: job.ownerUin, gTk: job.gTk, cursor, count: 50, scope: feedScope, signal: activeAbortController.signal });
+        feedScope = Number(page.requestScope) === 0 ? 0 : 1;
+        if (page.diagnostic) {
+          pageDiagnostics.push({ pageNumber, ...page.diagnostic });
+          await store.writeDiagnostic("feed-pages", { pages: pageDiagnostics.slice(-100) });
+        }
+        for (const sourceEntry of page.entries) {
+          throwIfCancelled();
+          const entry = {
+            ...sourceEntry,
+            comments: job.options.includeComments ? sourceEntry.comments : [],
+            likes: job.options.includeLikes ? sourceEntry.likes : [],
+            media: [],
+          };
+          entry.media = await mapWithConcurrency(sourceEntry.media || [], 3, async (media) => {
+            if (!job.options.includeMedia || job.testMode) {
+              return media;
+            }
+            try {
+              const existingMedia = await store.getStoredMedia(media.sourceUrl);
+              const stored = existingMedia || await downloadMedia({ sourceUrl: media.sourceUrl, uin: job.ownerUin, signal: activeAbortController.signal })
+                .then((downloaded) => store.writeMedia({ sourceUrl: media.sourceUrl, ...downloaded }));
+              return { ...media, localPath: stored.relativePath, contentType: stored.contentType, size: stored.size };
+            } catch (error) {
+              if (activeAbortController.signal.aborted) throw error;
+              if (mediaFailures.length < 100) mediaFailures.push({ sourceUrl: media.sourceUrl, error: String(error?.message || error).slice(0, 300) });
+              return { ...media, downloadError: String(error?.message || error).slice(0, 300) };
+            }
+          });
+          await store.writeEntry(entry);
+          processedEntries += 1;
+        }
+        counts = await store.summarize();
+        const nextCursor = String(page.cursor || "");
+        const progress = Math.min(92, 30 + Math.round(62 * (1 - Math.exp(-pageNumber / 10))));
+        emit("progress", {
+          jobId: job.jobId,
+          progress,
+          phase: "collecting_posts",
+          message: `已导入 ${counts.entries} 条内容，正在处理第 ${pageNumber} 页…`,
+        });
+        await store.writeCheckpoint({ jobId: job.jobId, phase: "collecting_posts", cursors: { posts: nextCursor, postScope: feedScope }, counts });
+        hasMore = Boolean(page.hasMore && nextCursor && nextCursor !== cursor && !seenCursors.has(nextCursor));
+        if (nextCursor) seenCursors.add(nextCursor);
+        cursor = nextCursor;
+        activeCursors = { posts: cursor, postScope: feedScope };
+        if (hasMore && !job.testMode) await abortableDelay(350 + Math.floor(Math.random() * 250), activeAbortController.signal);
+      }
+      if (hasMore) throw new Error("说说页数超过 500 页安全限制，已保存恢复点，可再次运行继续");
+      if (!processedEntries && !counts.entries) await store.writeDiagnostic("empty-post-stream", { message: "接口成功返回，但没有找到本人可归档的说说" });
+    }
+
+    if (mediaFailures.length) await store.writeDiagnostic("media-download-failures", { count: mediaFailures.length, items: mediaFailures });
+
+    emit("progress", { jobId: job.jobId, progress: 96, phase: "archive_ready", message: "正在写入归档清单与本地索引…" });
+    throwIfCancelled();
+    counts = await store.summarize();
+    await store.complete({ jobId: job.jobId, status: "complete", counts });
+    emit("complete", {
+      jobId: job.jobId,
+      progress: 100,
+      archivePath: job.archiveRoot,
+      counts,
+      schemaVersion: 1,
+      phase: "collection_complete",
+      message: `已将 ${counts.entries} 条内容写入本地档案`,
+    });
+  } catch (error) {
+    const cancelled = activeAbortController?.signal.aborted;
+    try {
+      if (!cancelled) {
+        await store.writeDiagnostic("collection-error", {
+          name: String(error?.name || "Error"),
+          code: String(error?.code || ""),
+          message: String(error?.message || error).slice(0, 500),
+          response: error?.diagnostic || null,
+        });
+      }
+      await store.writeCheckpoint({ jobId: job.jobId, phase: cancelled ? "cancelled" : "failed", cursors: activeCursors, counts, error: cancelled ? null : String(error?.message || error) });
+    } catch {
+      // Preserve the original collector error.
+    }
+    emit(cancelled ? "cancelled" : "error", {
+      jobId: job.jobId,
+      phase: !cancelled && isAuthenticationFailure(error?.code) ? "authentication_required" : "collection_failed",
+      counts,
+      message: cancelled ? "采集任务已取消，恢复点已经保留" : String(error?.message || error || "采集进程失败"),
+    });
+  } finally {
+    activeJob = null;
+    activeAbortController = null;
+  }
+}
+
+parentPort.on("message", (event) => {
+  const message = event?.data || event;
+  if (message?.type === "start") {
+    void run(message.job);
+    return;
+  }
+  if (message?.type === "cancel" && activeJob?.jobId === message.jobId) activeAbortController?.abort();
+});
