@@ -15,35 +15,41 @@ async function run() {
   });
 
   try {
-    const terminal = await new Promise((resolve, reject) => {
+    const runJob = (job) => new Promise((resolve, reject) => {
       const timeout = setTimeout(() => reject(new Error("独立采集进程测试超时")), 12000);
       const progress = [];
-      child.on("message", (message) => {
+      const onMessage = (message) => {
         if (message?.type === "progress") progress.push(message);
         if (["complete", "error", "cancelled"].includes(message?.type)) {
           clearTimeout(timeout);
+          child.off("message", onMessage);
           resolve({ message, progress });
         }
-      });
-      child.on("error", (error) => {
+      };
+      const onError = (error) => {
         clearTimeout(timeout);
+        child.off("message", onMessage);
         reject(error);
-      });
+      };
+      child.once("error", onError);
+      child.on("message", onMessage);
       child.postMessage({
         type: "start",
-        job: {
-          jobId: "collector-smoke",
-          ownerUin: "12345678",
-          archiveRoot: rootPath,
-          options: { items: ["posts", "albums", "comments", "likes"], includeComments: true, includeLikes: true, includeMedia: true },
-          testMode: true,
-          testEntries: [{ sourceId: "test-post-1", type: "post", createdAt: "2026-08-29T01:00:00.000Z", title: null, text: "独立采集进程测试", media: [], comments: [{ name: "测试用户", text: "评论" }], likes: [{ name: "测试用户" }], metrics: { commentCount: 1, likeCount: 1 }, sourceMeta: { adapter: "test" } }],
-        },
+        job,
       });
     });
+    const baseJob = {
+      ownerUin: "12345678",
+      archiveRoot: rootPath,
+      options: { items: ["posts", "albums", "comments", "likes"], includeComments: true, includeLikes: true, includeMedia: true },
+      testMode: true,
+      testEntries: [{ sourceId: "test-post-1", type: "post", createdAt: "2026-08-29T01:00:00.000Z", title: null, text: "独立采集进程测试", media: [], comments: [{ name: "测试用户", text: "评论" }], likes: [{ name: "测试用户" }], metrics: { commentCount: 1, likeCount: 1 }, sourceMeta: { adapter: "test" } }],
+    };
+    const terminal = await runJob({ ...baseJob, jobId: "collector-smoke" });
 
     assert.equal(terminal.message.type, "complete");
     assert.equal(terminal.message.phase, "collection_complete");
+    assert.deepEqual(terminal.message.changes, { added: 1, updated: 0, skipped: 0 });
     assert.ok(terminal.progress.length >= 3);
     const manifest = JSON.parse(await fs.readFile(path.join(rootPath, "manifest.json"), "utf8"));
     const checkpoint = JSON.parse(await fs.readFile(path.join(rootPath, "state", "checkpoint.json"), "utf8"));
@@ -51,6 +57,11 @@ async function run() {
     assert.equal(manifest.collection.status, "complete");
     assert.equal(manifest.collection.counts.entries, 1);
     assert.equal(checkpoint.phase, "complete");
+
+    const incremental = await runJob({ ...baseJob, jobId: "collector-incremental-smoke" });
+    assert.equal(incremental.message.type, "complete");
+    assert.equal(incremental.message.mode, "incremental");
+    assert.deepEqual(incremental.message.changes, { added: 0, updated: 0, skipped: 1 });
 
     const cookieStatus = analyzeQzoneCookies([
       { name: "uin", value: "o12345678", domain: ".qq.com" },

@@ -15,7 +15,9 @@ QQ-{uin}/
 │  └─ checkpoint.json
 └─ diagnostics/
    ├─ session-check.json
-   └─ collection-plan.json
+   ├─ collection-plan.json
+   ├─ revisions/     # previous normalized revisions of updated records
+   └─ integrity/     # quarantined corrupt records and repair reports
 ```
 
 ## Invariants
@@ -27,3 +29,12 @@ QQ-{uin}/
 - Media bytes and their index are separate from normalized content records so exports can choose whether to embed, link, or omit originals.
 - Endpoint responses are normalized at the collector boundary. UI and export code consume the local schema rather than depending on QQ response shapes.
 - `archive-index.json` lives in Electron user data and points to the most recently completed archive. It contains only the local path and masked account label, allowing the UI to reopen an archive without restoring a QQ session.
+
+## Incremental and recovery rules
+
+- Every successful collection records a posts high-water mark, recent source IDs, the last full-scan time, and added/updated/skipped counts in `manifest.json`.
+- A recent archive stops paging after a complete page contains only known, unchanged records. At least once every 30 days it performs a full scan so older edits can still be discovered.
+- The same `type:sourceId` always resolves to the same entry file. An unchanged record is skipped; a changed record atomically replaces the current entry and the previous JSON is retained under `diagnostics/revisions/`.
+- Duplicate appearances of the same source record do not create duplicate entry files.
+- Records that disappear from a QQ response are retained locally. A missing upstream item may be deleted, hidden, rate-limited, or temporarily unavailable, so this application never treats absence as authorization to delete the user's archive.
+- Integrity checks validate normalized entry JSON and local media paths. Repair moves malformed entries into an archive-local quarantine and clears invalid media paths so a later backup can download the originals again.

@@ -4,6 +4,7 @@ const path = require("node:path");
 const { createHash, randomUUID } = require("node:crypto");
 const { pathToFileURL } = require("node:url");
 const { sanitizeCollectionOptions } = require("./archive/schema.cjs");
+const { ArchiveStore } = require("./archive/store.cjs");
 const {
   addQzoneAccount,
   getActiveQzoneAccountId,
@@ -180,8 +181,11 @@ async function resolveAiConfig(selection = {}, draft = {}) {
 }
 
 async function saveAiConfig(config) {
-  await fs.mkdir(path.dirname(aiConfigPath()), { recursive: true });
-  await fs.writeFile(aiConfigPath(), JSON.stringify(config), { encoding: "utf8", mode: 0o600 });
+  const target = aiConfigPath();
+  const temporary = `${target}.${randomUUID()}.tmp`;
+  await fs.mkdir(path.dirname(target), { recursive: true });
+  await fs.writeFile(temporary, `${JSON.stringify(config, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+  await fs.rename(temporary, target);
 }
 
 function providerFromDraft(draft, existing) {
@@ -449,6 +453,7 @@ async function readLatestArchive(accountId) {
   const accountIndex = index.byAccount[activeAccountId];
   if (!accountIndex) return null;
   const archiveRoot = await assertArchiveRoot(accountIndex.archiveRoot);
+  const archiveStore = new ArchiveStore(archiveRoot);
   let manifest;
   try {
     manifest = JSON.parse(await fs.readFile(path.join(archiveRoot, "manifest.json"), "utf8"));
@@ -498,6 +503,7 @@ async function readLatestArchive(accountId) {
   const years = entries.map((entry) => Number(String(entry.date).slice(0, 4))).filter(Number.isFinite);
   const completedAt = manifest.collection?.lastCompletedAt || manifest.updatedAt;
   const imported = completedAt ? new Date(completedAt) : new Date();
+  const integrity = await archiveStore.checkIntegrity();
   return {
     id: String(manifest.archiveId || "local-qzone-archive"),
     isDemo: false,
@@ -505,12 +511,29 @@ async function readLatestArchive(accountId) {
     lastBackupAt: imported.toISOString(),
     importedAt: new Intl.DateTimeFormat("zh-CN", { dateStyle: "long", timeStyle: "short" }).format(imported),
     range: years.length ? `${Math.min(...years)}—${Math.max(...years)}` : "尚无内容",
+    integrity,
     entries,
   };
 }
 
+async function repairLatestArchive(accountId) {
+  const index = await readArchiveIndex();
+  const activeAccountId = String(accountId || await getActiveQzoneAccountId());
+  const accountIndex = index.byAccount[activeAccountId];
+  if (!accountIndex) throw new Error("当前账号还没有本地档案");
+  const archiveRoot = await assertArchiveRoot(accountIndex.archiveRoot);
+  return new ArchiveStore(archiveRoot).repairIntegrity();
+}
+
 function publicCollectorEvent(message) {
   const type = ["progress", "complete", "error", "cancelled"].includes(message?.type) ? message.type : "error";
+  const changes = message?.changes && typeof message.changes === "object"
+    ? {
+        added: Math.max(0, Number(message.changes.added) || 0),
+        updated: Math.max(0, Number(message.changes.updated) || 0),
+        skipped: Math.max(0, Number(message.changes.skipped) || 0),
+      }
+    : undefined;
   return {
     type,
     jobId: String(message?.jobId || ""),
@@ -519,6 +542,8 @@ function publicCollectorEvent(message) {
     message: message?.message ? String(message.message).slice(0, 500) : "",
     archivePath: type === "complete" && message?.archivePath ? String(message.archivePath) : "",
     counts: message?.counts && typeof message.counts === "object" ? message.counts : undefined,
+    changes,
+    mode: type === "complete" && ["full", "incremental"].includes(message?.mode) ? message.mode : undefined,
     schemaVersion: type === "complete" ? Number(message?.schemaVersion) || 1 : undefined,
   };
 }
@@ -639,6 +664,11 @@ ipcMain.handle("desktop:qzone:open-login", async (event, input = {}) => openQzon
 ipcMain.handle("desktop:qzone:start-collection", async (event, input) => startCollectorJob(event.sender, input));
 
 ipcMain.handle("desktop:qzone:read-archive", async () => readLatestArchive());
+
+ipcMain.handle("desktop:qzone:repair-archive", async () => {
+  if (collectorJobs.size) throw new Error("备份进行中，完成或取消后才能检查档案");
+  return repairLatestArchive();
+});
 
 ipcMain.handle("desktop:qzone:cancel-collection", (_event, jobId) => {
   const job = collectorJobs.get(String(jobId || ""));

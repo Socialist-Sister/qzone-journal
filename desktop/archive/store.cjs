@@ -43,6 +43,38 @@ function entryFileName(entry) {
   return `${createHash("sha256").update(`${entry.type}:${entry.sourceId}`).digest("hex")}.json`;
 }
 
+function stableValue(value) {
+  if (Array.isArray(value)) return value.map(stableValue);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.keys(value).sort().map((key) => [key, stableValue(value[key])]));
+}
+
+function entryContentFingerprint(entry) {
+  const projection = {
+    sourceId: String(entry?.sourceId || ""),
+    type: String(entry?.type || "post"),
+    createdAt: String(entry?.createdAt || ""),
+    updatedAt: entry?.updatedAt ? String(entry.updatedAt) : null,
+    title: entry?.title ? String(entry.title) : null,
+    text: String(entry?.text || ""),
+    location: entry?.location ? String(entry.location) : null,
+    visibility: String(entry?.visibility || "unknown"),
+    media: (Array.isArray(entry?.media) ? entry.media : []).map((item) => ({
+      sourceUrl: String(item?.sourceUrl || ""),
+      type: String(item?.type || item?.contentType || ""),
+    })),
+    comments: (Array.isArray(entry?.comments) ? entry.comments : []).map((item) => ({
+      name: String(item?.name || item?.author || ""),
+      text: String(item?.text || item?.content || ""),
+    })),
+    likes: (Array.isArray(entry?.likes) ? entry.likes : []).map((item) => ({
+      name: String(item?.name || item?.nickname || item || ""),
+    })),
+    metrics: entry?.metrics && typeof entry.metrics === "object" ? entry.metrics : {},
+  };
+  return createHash("sha256").update(JSON.stringify(stableValue(projection))).digest("hex");
+}
+
 function extensionForMedia(contentType, sourceUrl) {
   const byType = {
     "image/avif": ".avif",
@@ -257,11 +289,53 @@ class ArchiveStore {
     return committedState;
   }
 
+  async inspectEntry(input, options = {}) {
+    const normalizedInput = normalizeArchiveEntry(input);
+    const filePath = path.join(this.rootPath, "records", "entries", entryFileName(normalizedInput));
+    const existing = await readJson(filePath);
+    const mergedInput = {
+      ...input,
+      comments: options.includeComments === false ? existing?.comments || [] : input?.comments,
+      likes: options.includeLikes === false ? existing?.likes || [] : input?.likes,
+      media: options.includeMedia === false ? existing?.media || input?.media : input?.media,
+    };
+    const entry = normalizeArchiveEntry(mergedInput);
+    entry.contentFingerprint = entryContentFingerprint(entry);
+    const existingFingerprint = existing
+      ? String(existing.contentFingerprint || entryContentFingerprint(existing))
+      : "";
+    let existingMediaMissing = false;
+    for (const media of Array.isArray(existing?.media) ? existing.media : []) {
+      if (!media?.localPath) {
+        if (options.includeMedia !== false && media?.sourceUrl) existingMediaMissing = true;
+        continue;
+      }
+      const mediaPath = path.resolve(this.rootPath, ...String(media.localPath).split("/"));
+      if (!mediaPath.startsWith(this.rootPath + path.sep) || !(await fileExists(mediaPath))) {
+        existingMediaMissing = true;
+        break;
+      }
+    }
+    return {
+      change: !existing ? "added" : existingFingerprint === entry.contentFingerprint && !existingMediaMissing ? "skipped" : "updated",
+      entry,
+      existing,
+      filePath,
+    };
+  }
+
   async writeEntry(input) {
     const entry = normalizeArchiveEntry(input);
+    entry.contentFingerprint = entryContentFingerprint(entry);
     const filePath = path.join(this.rootPath, "records", "entries", entryFileName(entry));
+    const existing = await readJson(filePath);
+    if (existing && String(existing.contentFingerprint || entryContentFingerprint(existing)) !== entry.contentFingerprint) {
+      const revisionDirectory = path.join(this.rootPath, "diagnostics", "revisions", path.basename(filePath, ".json"));
+      const revisionName = isoNow().replace(/[:.]/g, "-") + ".json";
+      await atomicWriteJson(path.join(revisionDirectory, revisionName), existing);
+    }
     await atomicWriteJson(filePath, entry);
-    return { entry, filePath };
+    return { entry, filePath, change: !existing ? "added" : "updated" };
   }
 
   async writeMedia({ sourceUrl, bytes, contentType, finalUrl }) {
@@ -334,6 +408,116 @@ class ArchiveStore {
     }, { entries: 0, media: 0, mediaBytes: 0, comments: 0, likes: 0 });
   }
 
+  async checkIntegrity() {
+    const entriesDirectory = path.join(this.rootPath, "records", "entries");
+    const report = {
+      checkedEntries: 0,
+      corruptEntries: [],
+      missingMedia: [],
+      unsafeMedia: [],
+    };
+    for (const name of await listJsonNames(entriesDirectory)) {
+      let entry;
+      try {
+        entry = JSON.parse(await fs.readFile(path.join(entriesDirectory, name), "utf8"));
+      } catch (error) {
+        report.corruptEntries.push({ fileName: name, reason: error instanceof SyntaxError ? "JSON 格式损坏" : "记录无法读取" });
+        continue;
+      }
+      if (!entry?.sourceId || !["post", "journal", "album"].includes(entry?.type)) {
+        report.corruptEntries.push({ fileName: name, reason: "记录缺少必要字段" });
+        continue;
+      }
+      report.checkedEntries += 1;
+      for (const media of Array.isArray(entry.media) ? entry.media : []) {
+        if (!media?.localPath) continue;
+        const localPath = String(media.localPath);
+        const mediaPath = path.resolve(this.rootPath, ...localPath.split("/"));
+        if (!mediaPath.startsWith(this.rootPath + path.sep)) {
+          report.unsafeMedia.push({ fileName: name, localPath });
+        } else if (!(await fileExists(mediaPath))) {
+          report.missingMedia.push({ fileName: name, localPath });
+        }
+      }
+    }
+    return {
+      ...report,
+      needsRepair: report.corruptEntries.length + report.missingMedia.length + report.unsafeMedia.length > 0,
+    };
+  }
+
+  async repairIntegrity() {
+    const report = await this.checkIntegrity();
+    if (!report.needsRepair) return { ...report, repairedEntries: 0, quarantinedEntries: 0, counts: await this.summarize() };
+
+    const entriesDirectory = path.join(this.rootPath, "records", "entries");
+    const repairId = isoNow().replace(/[:.]/g, "-");
+    const quarantineDirectory = path.join(this.rootPath, "diagnostics", "integrity", repairId, "corrupt-entries");
+    await fs.mkdir(quarantineDirectory, { recursive: true });
+    let quarantinedEntries = 0;
+    for (const item of report.corruptEntries) {
+      const source = path.join(entriesDirectory, item.fileName);
+      if (!(await fileExists(source))) continue;
+      await fs.rename(source, path.join(quarantineDirectory, item.fileName));
+      quarantinedEntries += 1;
+    }
+
+    const affectedFiles = new Set([...report.missingMedia, ...report.unsafeMedia].map((item) => item.fileName));
+    let repairedEntries = 0;
+    for (const fileName of affectedFiles) {
+      const filePath = path.join(entriesDirectory, fileName);
+      const entry = await readJson(filePath);
+      if (!entry) continue;
+      entry.media = (Array.isArray(entry.media) ? entry.media : []).map((media) => {
+        const issue = [...report.missingMedia, ...report.unsafeMedia]
+          .some((item) => item.fileName === fileName && item.localPath === String(media?.localPath || ""));
+        if (!issue) return media;
+        const repaired = { ...media, localPath: null, size: 0, downloadError: "本地媒体缺失，等待下次备份重新下载" };
+        return repaired;
+      });
+      entry.contentFingerprint = entryContentFingerprint(entry);
+      await atomicWriteJson(filePath, entry);
+      repairedEntries += 1;
+    }
+
+    const counts = await this.summarize();
+    const manifest = await readJson(this.manifestPath);
+    if (manifest) {
+      manifest.updatedAt = isoNow();
+      manifest.collection = {
+        ...manifest.collection,
+        counts,
+        highWater: { posts: await this.buildPostsHighWater() },
+      };
+      await atomicWriteJson(this.manifestPath, manifest);
+    }
+    await this.writeDiagnostic("integrity-repair", {
+      repairId,
+      quarantinedEntries,
+      repairedEntries,
+      missingMedia: report.missingMedia.length,
+      unsafeMedia: report.unsafeMedia.length,
+    });
+    return {
+      ...report,
+      needsRepair: false,
+      repairedEntries,
+      quarantinedEntries,
+      counts,
+    };
+  }
+
+  async buildPostsHighWater() {
+    const entries = (await this.readEntries())
+      .filter((entry) => entry.type === "post" && entry.sourceId)
+      .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
+    return {
+      latestCreatedAt: entries[0]?.createdAt || null,
+      recentSourceIds: entries.slice(0, 200).map((entry) => String(entry.sourceId)),
+      capturedAt: isoNow(),
+    };
+  }
+
   async writeCheckpoint(checkpoint) {
     await atomicWriteJson(path.join(this.rootPath, "state", "checkpoint.json"), {
       schemaVersion: ARCHIVE_SCHEMA_VERSION,
@@ -351,17 +535,31 @@ class ArchiveStore {
     });
   }
 
-  async complete({ jobId, status = "ready_for_collection", counts }) {
+  async complete({ jobId, status = "ready_for_collection", counts, changes, fullScanCompleted = true }) {
     const manifest = await readJson(this.manifestPath);
     if (!manifest) throw new Error("归档清单不存在");
-    manifest.updatedAt = isoNow();
+    const completedAt = isoNow();
+    manifest.updatedAt = completedAt;
+    const normalizedChanges = {
+      added: Math.max(0, Number(changes?.added) || 0),
+      updated: Math.max(0, Number(changes?.updated) || 0),
+      skipped: Math.max(0, Number(changes?.skipped) || 0),
+    };
     manifest.collection = {
       ...manifest.collection,
       status,
       activeJobId: null,
       lastCompletedJobId: jobId,
-      lastCompletedAt: isoNow(),
+      lastCompletedAt: completedAt,
       counts: counts || manifest.collection.counts,
+      highWater: { posts: await this.buildPostsHighWater() },
+      lastFullScanAt: fullScanCompleted ? completedAt : manifest.collection.lastFullScanAt || null,
+      lastRun: {
+        mode: fullScanCompleted ? "full" : "incremental",
+        changes: normalizedChanges,
+        completedAt,
+      },
+      deletionPolicy: "retain_unseen",
     };
     await atomicWriteJson(this.manifestPath, manifest);
     await this.writeCheckpoint({ jobId, phase: status, cursors: {} });

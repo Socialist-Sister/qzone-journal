@@ -564,6 +564,8 @@ input:focus-visible {
   gap: 24px;
 }
 .archive-heading-actions { display: flex; align-items: center; gap: 10px; }
+.integrity-banner { margin: 12px 0 0; padding: 10px 13px; border: 1px solid rgba(181, 126, 55, 0.24); border-radius: 9px; display: flex; align-items: flex-start; gap: 9px; color: #7a5b32; background: #fff8e9; font-size: 11px; line-height: 1.55; }
+.integrity-banner svg { flex: 0 0 auto; margin-top: 1px; color: #c38a3d; }
 .demo-badge {
   min-height: 28px;
   padding: 0 10px;

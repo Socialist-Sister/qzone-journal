@@ -43,6 +43,9 @@ async function run(job) {
   const pageDiagnostics = [];
   let activeCursors = {};
   let parserMigration = null;
+  const changes = { added: 0, updated: 0, skipped: 0 };
+  let incrementalMode = false;
+  let stoppedAtKnownPage = false;
 
   try {
     emit("progress", { jobId: job.jobId, progress: 5, phase: "initializing", message: "正在建立本地归档目录…" });
@@ -52,6 +55,9 @@ async function run(job) {
     const canResume = !initialization.migrationRequired && ["collecting_posts", "cancelled", "failed"].includes(previousCheckpoint?.phase);
     let resumeCursor = canResume ? String(previousCheckpoint?.cursors?.posts || "") : "";
     let resumeScope = canResume && Number(previousCheckpoint?.cursors?.postScope) === 0 ? 0 : 1;
+    const lastFullScanAt = Date.parse(String(initialization.manifest.collection?.lastFullScanAt || ""));
+    const fullScanDue = !Number.isFinite(lastFullScanAt) || Date.now() - lastFullScanAt >= 30 * 24 * 60 * 60 * 1000;
+    incrementalMode = counts.entries > 0 && !canResume && !initialization.migrationRequired && !fullScanDue;
     activeCursors = { posts: resumeCursor, postScope: resumeScope };
     throwIfCancelled();
     await store.writeCheckpoint({ jobId: job.jobId, phase: "session_check", cursors: activeCursors, counts });
@@ -67,6 +73,7 @@ async function run(job) {
     if (initialization.migrationRequired) {
       parserMigration = await store.beginParserMigration({ jobId: job.jobId });
       counts = await store.summarize();
+      incrementalMode = false;
       resumeCursor = "";
       resumeScope = 1;
       activeCursors = { posts: "", postScope: 1 };
@@ -96,21 +103,35 @@ async function run(job) {
           pageDiagnostics.push({ pageNumber, ...page.diagnostic });
           await store.writeDiagnostic("feed-pages", { pages: pageDiagnostics.slice(-100) });
         }
+        const pageChanges = { added: 0, updated: 0, skipped: 0 };
         for (const sourceEntry of page.entries) {
           throwIfCancelled();
+          const inspection = await store.inspectEntry(sourceEntry, {
+            includeComments: job.options.includeComments,
+            includeLikes: job.options.includeLikes,
+            includeMedia: job.options.includeMedia,
+          });
+          if (inspection.change === "skipped") {
+            changes.skipped += 1;
+            pageChanges.skipped += 1;
+            continue;
+          }
           const entry = {
-            ...sourceEntry,
-            comments: job.options.includeComments ? sourceEntry.comments : [],
-            likes: job.options.includeLikes ? sourceEntry.likes : [],
+            ...inspection.entry,
             media: [],
           };
-          entry.media = await mapWithConcurrency(sourceEntry.media || [], 3, async (media) => {
-            if (!job.options.includeMedia || job.testMode) {
-              return media;
-            }
+          const existingMedia = new Map((inspection.existing?.media || []).map((media) => [String(media.sourceUrl || ""), media]));
+          entry.media = await mapWithConcurrency(inspection.entry.media || [], 3, async (media) => {
+            const preserved = existingMedia.get(String(media.sourceUrl || ""));
+            if (!job.options.includeMedia) return preserved || media;
+            if (job.testMode) return media;
             try {
-              const existingMedia = await store.getStoredMedia(media.sourceUrl);
-              const stored = existingMedia || await downloadMedia({ sourceUrl: media.sourceUrl, uin: job.ownerUin, signal: activeAbortController.signal })
+              if (preserved?.localPath) {
+                const verified = await store.getStoredMedia(media.sourceUrl);
+                if (verified) return { ...preserved, localPath: verified.relativePath, contentType: verified.contentType, size: verified.size };
+              }
+              const indexedMedia = await store.getStoredMedia(media.sourceUrl);
+              const stored = indexedMedia || await downloadMedia({ sourceUrl: media.sourceUrl, uin: job.ownerUin, signal: activeAbortController.signal })
                 .then((downloaded) => store.writeMedia({ sourceUrl: media.sourceUrl, ...downloaded }));
               return { ...media, localPath: stored.relativePath, contentType: stored.contentType, size: stored.size };
             } catch (error) {
@@ -120,19 +141,28 @@ async function run(job) {
             }
           });
           await store.writeEntry(entry);
+          changes[inspection.change] += 1;
+          pageChanges[inspection.change] += 1;
           processedEntries += 1;
         }
         counts = await store.summarize();
         const nextCursor = String(page.cursor || "");
+        const reachedKnownPage = incrementalMode
+          && page.entries.length > 0
+          && pageChanges.added === 0
+          && pageChanges.updated === 0
+          && pageChanges.skipped === page.entries.length;
+        if (reachedKnownPage) stoppedAtKnownPage = true;
         const progress = Math.min(92, 30 + Math.round(62 * (1 - Math.exp(-pageNumber / 10))));
         emit("progress", {
           jobId: job.jobId,
           progress,
           phase: "collecting_posts",
           message: `已导入 ${counts.entries} 条内容，正在处理第 ${pageNumber} 页…`,
+          changes,
         });
         await store.writeCheckpoint({ jobId: job.jobId, phase: "collecting_posts", cursors: { posts: nextCursor, postScope: feedScope }, counts });
-        hasMore = Boolean(page.hasMore && nextCursor && nextCursor !== cursor && !seenCursors.has(nextCursor));
+        hasMore = Boolean(!reachedKnownPage && page.hasMore && nextCursor && nextCursor !== cursor && !seenCursors.has(nextCursor));
         if (nextCursor) seenCursors.add(nextCursor);
         cursor = nextCursor;
         activeCursors = { posts: cursor, postScope: feedScope };
@@ -147,7 +177,13 @@ async function run(job) {
     emit("progress", { jobId: job.jobId, progress: 96, phase: "archive_ready", message: "正在写入归档清单与本地索引…" });
     throwIfCancelled();
     counts = await store.summarize();
-    await store.complete({ jobId: job.jobId, status: "complete", counts });
+    await store.complete({
+      jobId: job.jobId,
+      status: "complete",
+      counts,
+      changes,
+      fullScanCompleted: !stoppedAtKnownPage,
+    });
     if (parserMigration) {
       await store.commitParserMigration(parserMigration);
       parserMigration = null;
@@ -157,6 +193,8 @@ async function run(job) {
       progress: 100,
       archivePath: job.archiveRoot,
       counts,
+      changes,
+      mode: stoppedAtKnownPage ? "incremental" : "full",
       schemaVersion: 1,
       phase: "collection_complete",
       message: `已将 ${counts.entries} 条内容写入本地档案`,
@@ -188,6 +226,7 @@ async function run(job) {
       jobId: job.jobId,
       phase: !cancelled && isAuthenticationFailure(error?.code) ? "authentication_required" : "collection_failed",
       counts,
+      changes,
       message: cancelled ? "采集任务已取消，恢复点已经保留" : String(error?.message || error || "采集进程失败"),
     });
   } finally {

@@ -33,6 +33,10 @@ function createManifest({ ownerUin, jobId, options, existing }) {
       lastCompletedAt: existing?.collection?.lastCompletedAt || null,
       options,
       counts: existing?.collection?.counts || { entries: 0, media: 0, mediaBytes: 0, comments: 0, likes: 0 },
+      highWater: existing?.collection?.highWater || null,
+      lastFullScanAt: existing?.collection?.lastFullScanAt || null,
+      lastRun: existing?.collection?.lastRun || null,
+      deletionPolicy: "retain_unseen",
     },
     storage: {
       recordsDirectory: "records",

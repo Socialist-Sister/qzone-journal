@@ -33,6 +33,7 @@ contextBridge.exposeInMainWorld("desktop", Object.freeze({
     openLogin: (options = {}) => invoke("desktop:qzone:open-login", { force: options?.force === true }),
     startCollection: (options) => invoke("desktop:qzone:start-collection", options),
     readArchive: () => invoke("desktop:qzone:read-archive"),
+    repairArchive: () => invoke("desktop:qzone:repair-archive"),
     cancelCollection: (jobId) => invoke("desktop:qzone:cancel-collection", jobId),
     onCollectorEvent: (callback) => {
       if (typeof callback !== "function") return () => undefined;

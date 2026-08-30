@@ -51,6 +51,95 @@ test("archive store creates a versioned resumable archive and preserves media in
   assert.equal(mediaIndex.items.photo1.relativePath, "media/files/photo1.jpg");
 });
 
+test("archive store classifies incremental changes, preserves revisions, and records a high-water mark", async (context) => {
+  const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), "qzone-journal-incremental-"));
+  context.after(() => fs.rm(rootPath, { recursive: true, force: true }));
+  const store = new ArchiveStore(rootPath);
+  const options = sanitizeCollectionOptions({ items: ["posts", "comments", "likes"] });
+  await store.initialize({ ownerUin: "12345678", jobId: "initial-job", options });
+  const original = {
+    sourceId: "post-1",
+    type: "post",
+    createdAt: "2026-08-29T01:00:00.000Z",
+    text: "第一版正文",
+    media: [],
+    comments: [{ name: "小周", text: "第一条评论" }],
+    likes: [{ name: "小周" }],
+  };
+
+  const added = await store.inspectEntry(original, options);
+  assert.equal(added.change, "added");
+  await store.writeEntry(added.entry);
+  const skipped = await store.inspectEntry(original, options);
+  assert.equal(skipped.change, "skipped");
+  const preserved = await store.inspectEntry({ ...original, comments: [], likes: [] }, {
+    includeComments: false,
+    includeLikes: false,
+    includeMedia: true,
+  });
+  assert.equal(preserved.change, "skipped");
+
+  const updated = await store.inspectEntry({ ...original, text: "第二版正文" }, options);
+  assert.equal(updated.change, "updated");
+  await store.writeEntry(updated.entry);
+  const revisionRoot = path.join(rootPath, "diagnostics", "revisions");
+  const revisionDirectories = await fs.readdir(revisionRoot);
+  assert.equal(revisionDirectories.length, 1);
+  assert.equal((await fs.readdir(path.join(revisionRoot, revisionDirectories[0]))).length, 1);
+
+  const counts = await store.summarize();
+  await store.complete({
+    jobId: "incremental-job",
+    status: "complete",
+    counts,
+    changes: { added: 1, updated: 1, skipped: 1 },
+    fullScanCompleted: false,
+  });
+  const manifest = await readJson(path.join(rootPath, "manifest.json"));
+  assert.equal(manifest.collection.lastRun.mode, "incremental");
+  assert.deepEqual(manifest.collection.lastRun.changes, { added: 1, updated: 1, skipped: 1 });
+  assert.equal(manifest.collection.highWater.posts.latestCreatedAt, original.createdAt);
+  assert.deepEqual(manifest.collection.highWater.posts.recentSourceIds, ["post-1"]);
+  assert.equal(manifest.collection.deletionPolicy, "retain_unseen");
+});
+
+test("archive integrity repair quarantines malformed records and marks missing media for redownload", async (context) => {
+  const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), "qzone-journal-integrity-"));
+  context.after(() => fs.rm(rootPath, { recursive: true, force: true }));
+  const store = new ArchiveStore(rootPath);
+  const options = sanitizeCollectionOptions({ items: ["posts"] });
+  await store.initialize({ ownerUin: "12345678", jobId: "integrity-job", options });
+  await store.writeEntry({
+    sourceId: "post-with-missing-media",
+    type: "post",
+    createdAt: "2026-08-29T01:00:00.000Z",
+    text: "媒体文件稍后恢复",
+    media: [{ sourceUrl: "https://example.invalid/photo.jpg", localPath: "media/files/missing.jpg", size: 100 }],
+  });
+  const entriesDirectory = path.join(rootPath, "records", "entries");
+  await fs.writeFile(path.join(entriesDirectory, "broken.json"), "{broken", "utf8");
+
+  const before = await store.checkIntegrity();
+  assert.equal(before.corruptEntries.length, 1);
+  assert.equal(before.missingMedia.length, 1);
+  assert.equal(before.needsRepair, true);
+  const repaired = await store.repairIntegrity();
+  assert.equal(repaired.quarantinedEntries, 1);
+  assert.equal(repaired.repairedEntries, 1);
+  const entries = await store.readEntries();
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].media[0].localPath, null);
+  const nextInspection = await store.inspectEntry({
+    sourceId: "post-with-missing-media",
+    type: "post",
+    createdAt: "2026-08-29T01:00:00.000Z",
+    text: "媒体文件稍后恢复",
+    media: [{ sourceUrl: "https://example.invalid/photo.jpg" }],
+  }, options);
+  assert.equal(nextInspection.change, "updated");
+  assert.equal((await store.checkIntegrity()).needsRepair, false);
+});
+
 test("parser migration keeps legacy entries visible until collection starts and restores them on failure", async (context) => {
   const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), "qzone-journal-migration-"));
   context.after(() => fs.rm(rootPath, { recursive: true, force: true }));

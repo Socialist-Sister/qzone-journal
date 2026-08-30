@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.2.0-alpha] - 2026-08-30
+
+### 新功能
+
+- 新增真正的增量备份：记录说说高水位与最近内容 ID，展示新增、更新和跳过数量。
+- 新增档案完整性检查与修复入口，可隔离损坏记录并标记缺失图片等待重新下载。
+- 内容发生变化时保存旧版归档记录，便于恢复与问题排查。
+
+### 数据规则与可靠性
+
+- 同一来源动态使用稳定文件名，重复出现不会生成重复条目。
+- QQ 接口中暂时不可见或疑似删除的内容继续保留在本地，不根据单次缺失自动删除。
+- 近期备份遇到整页已知内容后提前停止；每 30 天至少执行一次完整扫描，以检查较早内容的变化。
+- AI 服务配置与应用偏好均使用临时文件加原子替换，降低异常退出导致配置损坏的风险。
+
 ## [0.1.1-alpha] - 2026-08-30
 
 ### 修复
@@ -33,5 +48,6 @@
 - QQ 非公开接口可能随服务端变化。
 - 安装包尚未进行代码签名。
 
+[0.2.0-alpha]: https://github.com/Socialist-Sister/qzone-journal/releases/tag/v0.2.0-alpha
 [0.1.1-alpha]: https://github.com/Socialist-Sister/qzone-journal/releases/tag/v0.1.1-alpha
 [0.1.0-alpha]: https://github.com/Socialist-Sister/qzone-journal/releases/tag/v0.1.0-alpha

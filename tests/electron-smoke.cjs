@@ -10,6 +10,7 @@ async function run() {
   let mockMaximized = false;
   let mockBackupDirectory = "C:\\Users\\Tester\\Documents\\空间备份";
   let openedBackupDirectory = 0;
+  let repairCalls = 0;
   let mockAccounts = {
     activeAccountId: "account-a",
     accounts: [
@@ -83,7 +84,7 @@ async function run() {
     if (collectionAttempts === 1) {
       setTimeout(() => event.sender.send("desktop:qzone:collector-event", { type: "error", jobId, phase: "authentication_required", message: "QQ 登录会话已失效", counts: { entries: 2, media: 2, comments: 0, likes: 0 } }), 90);
     } else {
-      setTimeout(() => event.sender.send("desktop:qzone:collector-event", { type: "complete", jobId, progress: 100, phase: "collection_complete", message: "采集完成", archivePath: "C:\\Users\\Tester\\Documents\\空间备份\\QQ-5678-test", schemaVersion: 1, counts: { entries: 1, media: 0, comments: 1, likes: 1 } }), 90);
+      setTimeout(() => event.sender.send("desktop:qzone:collector-event", { type: "complete", jobId, progress: 100, phase: "collection_complete", message: "采集完成", archivePath: "C:\\Users\\Tester\\Documents\\空间备份\\QQ-5678-test", schemaVersion: 1, mode: "incremental", changes: { added: 1, updated: 0, skipped: 2 }, counts: { entries: 1, media: 0, comments: 1, likes: 1 } }), 90);
     }
     return { jobId, archivePath: "C:\\Users\\Tester\\Documents\\空间备份\\QQ-12345678", accountLabel: "QQ ••••5678" };
   });
@@ -94,10 +95,15 @@ async function run() {
     lastBackupAt: "2026-08-29T10:00:00+08:00",
     importedAt: "2026年8月29日 10:00",
     range: "2026—2026",
+    integrity: { needsRepair: false, corruptEntries: [], missingMedia: [], unsafeMedia: [] },
     entries: [{ id: "real-post-1", type: "post", date: "2026-08-29T10:00:00+08:00", displayDate: "2026年8月29日 10:00", title: null, text: "真实归档流程测试", images: [], likes: ["小周"], comments: [{ name: "小周", text: "测试评论" }] }],
   }));
+  ipcMain.handle("desktop:qzone:repair-archive", () => {
+    repairCalls += 1;
+    return { repaired: true, quarantinedEntries: 0, mediaMarkedForRedownload: 0 };
+  });
   ipcMain.handle("desktop:qzone:cancel-collection", () => ({ cancelled: true }));
-  ipcMain.handle("desktop:app:info", () => ({ name: "空间备份", version: "0.1.0", platform: process.platform, packaged: false }));
+  ipcMain.handle("desktop:app:info", () => ({ name: "空间备份", version: "0.2.0-alpha", platform: process.platform, packaged: false }));
   const window = new BrowserWindow({
     width: 1120,
     height: 720,
@@ -122,7 +128,7 @@ async function run() {
       .every((method) => typeof window.desktop?.dialogs?.[method] === "function"),
     hasAiBridge: ["getConfig", "addProvider", "updateProvider", "deleteProvider", "detectModels", "testConnection", "generateReview", "askArchive"]
       .every((method) => typeof window.desktop?.ai?.[method] === "function"),
-    hasQzoneBridge: ["getSessionStatus", "listAccounts", "switchAccount", "addAccount", "openLogin", "startCollection", "readArchive", "cancelCollection", "onCollectorEvent"]
+    hasQzoneBridge: ["getSessionStatus", "listAccounts", "switchAccount", "addAccount", "openLogin", "startCollection", "readArchive", "repairArchive", "cancelCollection", "onCollectorEvent"]
       .every((method) => typeof window.desktop?.qzone?.[method] === "function"),
     hasHomeAction: ["快速开始", "再次备份"].some((label) => document.body.innerText.includes(label)),
     hasNoBrowserAction: !document.body.innerText.includes("使用系统浏览器"),
@@ -226,19 +232,30 @@ async function run() {
       hasCookieBoundary,
       offeredForcedRelogin,
       collectionComplete: document.body.innerText.includes("1 条内容已归档"),
+      showsIncrementalStats: document.body.innerText.includes("本次新增 1 条、更新 0 条、跳过 2 条"),
       showsArchivePath: document.querySelector(".archive-path")?.textContent.includes("QQ-5678-test") === true
     };
     findButton("打开我的档案")?.click();
     await new Promise((resolve) => setTimeout(resolve, 40));
     result.openedRealArchive = document.body.innerText.includes("真实归档流程测试");
+    result.hasRepairAction = Boolean(findButton("检查与修复"));
+    findButton("检查与修复")?.click();
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    result.repairNotice = document.querySelector(".window-notice")?.textContent || "";
+    result.repairCompleted = result.repairNotice.includes("档案检查完成");
     return result;
   })()`);
   process.stdout.write(`Electron backup flow: ${JSON.stringify(backupFlow)}\n`);
+  process.stdout.write(`Electron repair calls: ${repairCalls}\n`);
   assert.equal(backupFlow.hasCookieBoundary, true);
   assert.equal(backupFlow.offeredForcedRelogin, true);
   assert.equal(backupFlow.collectionComplete, true);
+  assert.equal(backupFlow.showsIncrementalStats, true);
   assert.equal(backupFlow.showsArchivePath, true);
   assert.equal(backupFlow.openedRealArchive, true);
+  assert.equal(backupFlow.hasRepairAction, true);
+  assert.equal(backupFlow.repairCompleted, true);
+  assert.equal(repairCalls, 1);
   assert.equal(loginCalls[0]?.force, false);
   assert.equal(loginCalls[1]?.force, true);
 
@@ -371,6 +388,7 @@ async function run() {
   ipcMain.removeHandler("desktop:qzone:open-login");
   ipcMain.removeHandler("desktop:qzone:start-collection");
   ipcMain.removeHandler("desktop:qzone:read-archive");
+  ipcMain.removeHandler("desktop:qzone:repair-archive");
   ipcMain.removeHandler("desktop:qzone:cancel-collection");
 }
 

@@ -343,7 +343,7 @@ function ImageViewer({ images, index, onChange, onClose }) {
   );
 }
 
-function ArchiveView({ archive, onStart, onImportDemo }) {
+function ArchiveView({ archive, onStart, onImportDemo, onRepair, repairing }) {
   const [filter, setFilter] = useState("all");
   const [query, setQuery] = useState("");
   const [selectedId, setSelectedId] = useState("");
@@ -387,9 +387,17 @@ function ArchiveView({ archive, onStart, onImportDemo }) {
         </div>
         <div className="archive-heading-actions">
           {archive.isDemo && <span className="demo-badge">演示数据</span>}
+          {!archive.isDemo && <button className="outline-action" type="button" disabled={repairing} onClick={onRepair}>{repairing ? "正在检查…" : "检查与修复"}</button>}
           <button className="outline-action" type="button" onClick={archive.isDemo ? onImportDemo : onStart}>{archive.isDemo ? "重新载入" : "再次备份"}</button>
         </div>
       </div>
+
+      {archive.integrity?.needsRepair && (
+        <div className="integrity-banner" role="alert">
+          <WarningCircle size={19} weight="fill" />
+          <span>发现 {archive.integrity.corruptEntries?.length || 0} 条损坏记录和 {(archive.integrity.missingMedia?.length || 0) + (archive.integrity.unsafeMedia?.length || 0)} 个媒体文件问题。修复前不会删除原始问题记录。</span>
+        </div>
+      )}
 
       <div className="archive-overview" aria-label="档案统计">
         <div><strong>{stats.total}</strong><span>条内容</span></div>
@@ -1475,7 +1483,7 @@ function BackupDialog({ onClose, onComplete, onAccountChange }) {
             <p className="dialog-kicker">{collectionResult ? "本地备份完成" : "第一次备份完成"}</p>
             <h2 id="dialog-title">{collectionResult ? `${collectionResult.counts?.entries || 0} 条内容已归档` : `${demoTotal} 条记忆已安全回家`}</h2>
             {collectionResult
-              ? <><p>已保存 {collectionResult.counts?.media || 0} 张图片（{formatFileSize(collectionResult.counts?.mediaBytes)}）、{collectionResult.counts?.comments || 0} 条评论和 {collectionResult.counts?.likes || 0} 条可见点赞记录。相册专项采集将在下一阶段接入。</p><code className="archive-path">{collectionResult.archivePath}</code>{flowError && <p className="dialog-error" role="alert"><WarningCircle size={17} weight="fill" />{flowError}</p>}</>
+              ? <><p>本次新增 {collectionResult.changes?.added || 0} 条、更新 {collectionResult.changes?.updated || 0} 条、跳过 {collectionResult.changes?.skipped || 0} 条未变化内容；共保存 {collectionResult.counts?.media || 0} 张图片（{formatFileSize(collectionResult.counts?.mediaBytes)}）、{collectionResult.counts?.comments || 0} 条评论和 {collectionResult.counts?.likes || 0} 条可见点赞记录。</p><code className="archive-path">{collectionResult.archivePath}</code>{flowError && <p className="dialog-error" role="alert"><WarningCircle size={17} weight="fill" />{flowError}</p>}</>
               : <p>当前是演示数据。正式采集接入后，档案会保存在你选择的本地目录。</p>}
             <button className="dialog-primary" type="button" disabled={openingArchive} onClick={collectionResult ? openCollectedArchive : onComplete}>{openingArchive ? <><LoadingSpinner />正在读取档案…</> : <>{collectionResult ? "打开我的档案" : "查看我的档案"}<ArrowRight size={20} /></>}</button>
           </div>
@@ -1513,6 +1521,7 @@ export function App() {
   const [aiConfig, setAiConfig] = useState({ configured: false, providers: [], modelOptions: [] });
   const [accountState, setAccountState] = useState({ activeAccountId: "", accounts: [] });
   const [accountBusy, setAccountBusy] = useState(false);
+  const [archiveRepairing, setArchiveRepairing] = useState(false);
   const [isMaximized, setIsMaximized] = useState(false);
   const [windowNotice, setWindowNotice] = useState("");
 
@@ -1562,6 +1571,28 @@ export function App() {
     const archive = await window.desktop?.qzone?.readArchive?.();
     setArchiveData(archive || null);
     return archive;
+  };
+
+  const handleRepairArchive = async () => {
+    if (archiveRepairing || !window.desktop?.qzone?.repairArchive) {
+      if (!window.desktop?.qzone?.repairArchive) {
+        setWindowNotice("档案检查仅在桌面版中可用");
+        window.setTimeout(() => setWindowNotice(""), 2500);
+      }
+      return;
+    }
+    setArchiveRepairing(true);
+    try {
+      const result = await window.desktop.qzone.repairArchive();
+      await loadActiveArchive();
+      const repaired = (result.quarantinedEntries || 0) + (result.repairedEntries || 0);
+      setWindowNotice(repaired ? `档案修复完成：处理了 ${repaired} 条记录` : "档案检查完成，未发现需要修复的问题");
+    } catch (error) {
+      setWindowNotice(readableError(error));
+    } finally {
+      setArchiveRepairing(false);
+      window.setTimeout(() => setWindowNotice(""), 3500);
+    }
   };
 
   const handleSwitchAccount = async (accountId) => {
@@ -1665,7 +1696,7 @@ export function App() {
           <img src="./assets/looseleaf-edge.png" alt="" draggable={false} />
         </div>
         {activeView === "home" && <Home onStart={() => start("app")} archive={archiveData} />}
-        {activeView === "archive" && <ArchiveView archive={archiveData} onStart={() => start("app")} onImportDemo={() => setDemoDialogOpen(true)} />}
+        {activeView === "archive" && <ArchiveView archive={archiveData} onStart={() => start("app")} onImportDemo={() => setDemoDialogOpen(true)} onRepair={handleRepairArchive} repairing={archiveRepairing} />}
         <div className="persistent-view" hidden={activeView !== "review"}>
           <ReviewView key={accountState.activeAccountId || "default"} archive={archiveData} aiConfig={aiConfig} onOpenAiSettings={openAiSettings} onStart={() => start("app")} onImportDemo={() => setDemoDialogOpen(true)} />
         </div>
