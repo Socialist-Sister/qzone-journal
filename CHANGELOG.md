@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.1-alpha] - 2026-08-30
+
+### 界面调整
+
+- 将“检查与修复”从档案页标题区域移动到“设置 → 常规”。
+- 新入口会说明该功能只检查和修复本地档案，不会修改 QQ 空间内容。
+- 当前账号没有真实本地档案时禁用按钮；检测到问题时显示损坏记录与媒体问题数量。
+
 ## [0.2.0-alpha] - 2026-08-30
 
 ### 新功能
@@ -48,6 +56,7 @@
 - QQ 非公开接口可能随服务端变化。
 - 安装包尚未进行代码签名。
 
+[0.2.1-alpha]: https://github.com/Socialist-Sister/qzone-journal/releases/tag/v0.2.1-alpha
 [0.2.0-alpha]: https://github.com/Socialist-Sister/qzone-journal/releases/tag/v0.2.0-alpha
 [0.1.1-alpha]: https://github.com/Socialist-Sister/qzone-journal/releases/tag/v0.1.1-alpha
 [0.1.0-alpha]: https://github.com/Socialist-Sister/qzone-journal/releases/tag/v0.1.0-alpha

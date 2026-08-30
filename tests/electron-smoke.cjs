@@ -103,7 +103,7 @@ async function run() {
     return { repaired: true, quarantinedEntries: 0, mediaMarkedForRedownload: 0 };
   });
   ipcMain.handle("desktop:qzone:cancel-collection", () => ({ cancelled: true }));
-  ipcMain.handle("desktop:app:info", () => ({ name: "空间备份", version: "0.2.0-alpha", platform: process.platform, packaged: false }));
+  ipcMain.handle("desktop:app:info", () => ({ name: "空间备份", version: "0.2.1-alpha", platform: process.platform, packaged: false }));
   const window = new BrowserWindow({
     width: 1120,
     height: 720,
@@ -238,6 +238,9 @@ async function run() {
     findButton("打开我的档案")?.click();
     await new Promise((resolve) => setTimeout(resolve, 40));
     result.openedRealArchive = document.body.innerText.includes("真实归档流程测试");
+    result.archiveHasNoRepairAction = !findButton("检查与修复");
+    findButton("设置")?.click();
+    await new Promise((resolve) => setTimeout(resolve, 40));
     result.hasRepairAction = Boolean(findButton("检查与修复"));
     findButton("检查与修复")?.click();
     await new Promise((resolve) => setTimeout(resolve, 120));
@@ -253,6 +256,7 @@ async function run() {
   assert.equal(backupFlow.showsIncrementalStats, true);
   assert.equal(backupFlow.showsArchivePath, true);
   assert.equal(backupFlow.openedRealArchive, true);
+  assert.equal(backupFlow.archiveHasNoRepairAction, true);
   assert.equal(backupFlow.hasRepairAction, true);
   assert.equal(backupFlow.repairCompleted, true);
   assert.equal(repairCalls, 1);

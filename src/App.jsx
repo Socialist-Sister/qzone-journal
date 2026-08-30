@@ -343,7 +343,7 @@ function ImageViewer({ images, index, onChange, onClose }) {
   );
 }
 
-function ArchiveView({ archive, onStart, onImportDemo, onRepair, repairing }) {
+function ArchiveView({ archive, onStart, onImportDemo }) {
   const [filter, setFilter] = useState("all");
   const [query, setQuery] = useState("");
   const [selectedId, setSelectedId] = useState("");
@@ -387,7 +387,6 @@ function ArchiveView({ archive, onStart, onImportDemo, onRepair, repairing }) {
         </div>
         <div className="archive-heading-actions">
           {archive.isDemo && <span className="demo-badge">演示数据</span>}
-          {!archive.isDemo && <button className="outline-action" type="button" disabled={repairing} onClick={onRepair}>{repairing ? "正在检查…" : "检查与修复"}</button>}
           <button className="outline-action" type="button" onClick={archive.isDemo ? onImportDemo : onStart}>{archive.isDemo ? "重新载入" : "再次备份"}</button>
         </div>
       </div>
@@ -798,7 +797,7 @@ function ReviewView({ archive, aiConfig, onStart, onImportDemo, onOpenAiSettings
   );
 }
 
-function SettingsView({ section, onSectionChange, aiConfig, onAiConfigChange }) {
+function SettingsView({ section, onSectionChange, aiConfig, onAiConfigChange, archive, onRepairArchive, archiveRepairing }) {
   const [autoBackup, setAutoBackup] = useState(false);
   const [anonymous, setAnonymous] = useState(true);
   const [notice, setNotice] = useState("");
@@ -1045,6 +1044,19 @@ function SettingsView({ section, onSectionChange, aiConfig, onAiConfigChange }) 
                     <button className="change-directory-action" type="button" onClick={chooseBackupDirectory}>更改位置</button>
                     <button className="open-directory-action" type="button" onClick={openBackupDirectory} aria-label="打开备份目录" title="打开备份目录"><FolderOpen size={22} /></button>
                   </div>
+                </div>
+                <div className="settings-row archive-maintenance-row">
+                  <div>
+                    <strong>本地档案完整性</strong>
+                    <span>{!archive || archive.isDemo
+                      ? "当前账号还没有可检查的本地档案"
+                      : archive.integrity?.needsRepair
+                        ? `已发现 ${archive.integrity.corruptEntries?.length || 0} 条损坏记录和 ${(archive.integrity.missingMedia?.length || 0) + (archive.integrity.unsafeMedia?.length || 0)} 个媒体文件问题`
+                        : "检查记录格式和本地图片；只处理本地副本，不会修改 QQ 空间"}</span>
+                  </div>
+                  <button className="archive-maintenance-action" type="button" disabled={archiveRepairing || !archive || archive.isDemo} onClick={onRepairArchive}>
+                    {archiveRepairing ? <><LoadingSpinner size={15} />正在检查…</> : "检查与修复"}
+                  </button>
                 </div>
               </div>
             </article>
@@ -1696,11 +1708,11 @@ export function App() {
           <img src="./assets/looseleaf-edge.png" alt="" draggable={false} />
         </div>
         {activeView === "home" && <Home onStart={() => start("app")} archive={archiveData} />}
-        {activeView === "archive" && <ArchiveView archive={archiveData} onStart={() => start("app")} onImportDemo={() => setDemoDialogOpen(true)} onRepair={handleRepairArchive} repairing={archiveRepairing} />}
+        {activeView === "archive" && <ArchiveView archive={archiveData} onStart={() => start("app")} onImportDemo={() => setDemoDialogOpen(true)} />}
         <div className="persistent-view" hidden={activeView !== "review"}>
           <ReviewView key={accountState.activeAccountId || "default"} archive={archiveData} aiConfig={aiConfig} onOpenAiSettings={openAiSettings} onStart={() => start("app")} onImportDemo={() => setDemoDialogOpen(true)} />
         </div>
-        {activeView === "settings" && <SettingsView section={settingsSection} onSectionChange={setSettingsSection} aiConfig={aiConfig} onAiConfigChange={setAiConfig} />}
+        {activeView === "settings" && <SettingsView section={settingsSection} onSectionChange={setSettingsSection} aiConfig={aiConfig} onAiConfigChange={setAiConfig} archive={archiveData} onRepairArchive={handleRepairArchive} archiveRepairing={archiveRepairing} />}
       </main>
       {dialogMethod && <BackupDialog onClose={() => setDialogMethod(null)} onComplete={complete} onAccountChange={refreshAccounts} />}
       {demoDialogOpen && <DemoImportDialog onClose={() => setDemoDialogOpen(false)} onComplete={completeDemoImport} />}

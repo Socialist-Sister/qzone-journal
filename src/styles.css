@@ -1262,6 +1262,29 @@ input:focus-visible {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 154px;
 }
+.archive-maintenance-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 154px;
+}
+.archive-maintenance-action {
+  width: 120px;
+  height: 34px;
+  justify-self: end;
+  border: 1px solid rgba(77, 141, 225, 0.28);
+  border-radius: 7px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  color: var(--blue-deep);
+  background: #f8fbff;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.archive-maintenance-action:hover:not(:disabled) { background: var(--blue-soft); border-color: rgba(77, 141, 225, 0.48); }
+.archive-maintenance-action:disabled { color: #9ba5aa; background: #f5f3ed; border-color: rgba(120, 126, 128, 0.14); cursor: default; }
+.archive-maintenance-action .loading-spinner { display: block; }
 .settings-directory-row > div:first-child { min-width: 0; }
 .settings-directory-row > div:first-child span { overflow-wrap: anywhere; }
 .settings-directory-actions {
