@@ -91,6 +91,15 @@ test("feeds3 diagnostics distinguish status posts from another author", () => {
   assert.deepEqual(page.appidCounts, { 311: 2 });
 });
 
+test("scope=1 uses feed_data publisher when raw opuin points elsewhere", () => {
+  const html = '<div id="feed_87654321_311_0_1700000000_0_1"><div class="f-nick"><a class="f-name">本人</a></div><div class="f-info">本人动态</div><i name="feed_data" data-tid="own-scope1" data-uin="12345678" data-abstime="1700000000"></i></div>';
+  const payload = `_Callback(${JSON.stringify({ code: 0, data: { main: { hasMoreFeeds: false }, data: [{ appid: 311, opuin: "87654321", html }] } })});`;
+  const page = parseFeeds3Page(payload, "12345678");
+  assert.equal(page.eligibleCount, 1);
+  assert.equal(page.entries.length, 1);
+  assert.equal(page.entries[0].text, "本人动态");
+});
+
 test("image posts keep text before feed_data and prefer originals over thumbnails", () => {
   const html = `<div id="feed_12345678_311_0_1700000000_0_1">
     <p class="txt-box-title ellipsis-one">带图说说正文</p>

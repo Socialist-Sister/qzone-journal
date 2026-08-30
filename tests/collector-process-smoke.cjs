@@ -106,6 +106,21 @@ async function run() {
     assert.equal(incremental.message.mode, "incremental");
     assert.deepEqual(incremental.message.changes, { added: 0, updated: 0, skipped: 1 });
 
+    const partial = await runJob({
+      ...baseJob,
+      jobId: "collector-partial-smoke",
+      testEntries: [{ ...baseJob.testEntries[0], sourceId: "test-post-2", text: "部分分页仍需保留" }],
+      testAuthAfterPage: 2,
+    });
+    assert.equal(partial.message.type, "complete");
+    assert.equal(partial.message.phase, "collection_partial");
+    assert.equal(partial.message.mode, "partial");
+    assert.equal(partial.message.truncated, true);
+    assert.equal(partial.message.counts.entries, 2);
+    const partialCheckpoint = JSON.parse(await fs.readFile(path.join(rootPath, "state", "checkpoint.json"), "utf8"));
+    assert.equal(partialCheckpoint.phase, "partial");
+    assert.equal(partialCheckpoint.counts.entries, 2);
+
     const cookieStatus = analyzeQzoneCookies([
       { name: "uin", value: "o12345678", domain: ".qq.com" },
       { name: "p_skey", value: "secret", domain: ".qzone.qq.com" },

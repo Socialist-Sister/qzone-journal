@@ -1627,6 +1627,8 @@ input:focus-visible {
   font-size: 12px;
   line-height: 1.5;
 }
+.dialog-warning { display: flex; align-items: flex-start; gap: 7px; color: #775f32 !important; }
+.dialog-warning svg { flex: 0 0 auto; margin-top: 2px; color: #c28b35; }
 .dialog-error svg { flex: 0 0 auto; margin-top: 1px; }
 .dialog-cancel {
   margin-top: 18px;

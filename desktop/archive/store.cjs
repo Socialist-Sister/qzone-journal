@@ -132,7 +132,7 @@ class ArchiveStore {
       schemaVersion: ARCHIVE_SCHEMA_VERSION,
       jobId,
       phase: "initialized",
-      cursors: !migrationRequired && (existingCheckpoint?.phase === "collecting_posts" || existingCheckpoint?.phase === "cancelled" || existingCheckpoint?.phase === "failed")
+      cursors: !migrationRequired && (["collecting_posts", "cancelled", "failed", "partial"].includes(existingCheckpoint?.phase))
         ? existingCheckpoint.cursors || {}
         : {},
       counts: existingCheckpoint?.counts || existing?.collection?.counts || {},
@@ -245,9 +245,10 @@ class ArchiveStore {
       await fs.rename(path.join(previousDirectory, name), target);
     }
 
+    const restoredCounts = await this.summarize();
     const manifest = await readJson(this.manifestPath);
     if (manifest && transaction.previousCollection) {
-      manifest.collection = transaction.previousCollection;
+      manifest.collection = { ...transaction.previousCollection, counts: restoredCounts };
       manifest.updatedAt = isoNow();
       await atomicWriteJson(this.manifestPath, manifest);
     }
@@ -260,7 +261,7 @@ class ArchiveStore {
     await atomicWriteJson(path.join(this.rootPath, "state", PARSER_MIGRATION_STATE), rollbackState);
     if (transaction.previousCheckpoint) await this.writeCheckpoint(transaction.previousCheckpoint);
     return {
-      counts: transaction.previousCollection?.counts || { entries: 0, media: 0, mediaBytes: 0, comments: 0, likes: 0 },
+      counts: restoredCounts,
       cursors: transaction.previousCheckpoint?.cursors || {},
     };
   }
@@ -287,6 +288,22 @@ class ArchiveStore {
       status: "committed",
     });
     return committedState;
+  }
+
+  async mergeParserMigrationPrevious(transaction) {
+    if (!transaction?.quarantineRelativePath) return this.summarize();
+    const entriesDirectory = path.join(this.rootPath, "records", "entries");
+    const previousDirectory = path.join(
+      this.rootPath,
+      ...String(transaction.quarantineRelativePath).split("/"),
+      "previous",
+    );
+    await fs.mkdir(entriesDirectory, { recursive: true });
+    for (const name of await listJsonNames(previousDirectory)) {
+      const target = path.join(entriesDirectory, name);
+      if (!(await fileExists(target))) await fs.copyFile(path.join(previousDirectory, name), target);
+    }
+    return this.summarize();
   }
 
   async inspectEntry(input, options = {}) {
@@ -535,7 +552,7 @@ class ArchiveStore {
     });
   }
 
-  async complete({ jobId, status = "ready_for_collection", counts, changes, fullScanCompleted = true }) {
+  async complete({ jobId, status = "ready_for_collection", counts, changes, fullScanCompleted = true, cursors = {} }) {
     const manifest = await readJson(this.manifestPath);
     if (!manifest) throw new Error("归档清单不存在");
     const completedAt = isoNow();
@@ -562,7 +579,7 @@ class ArchiveStore {
       deletionPolicy: "retain_unseen",
     };
     await atomicWriteJson(this.manifestPath, manifest);
-    await this.writeCheckpoint({ jobId, phase: status, cursors: {} });
+    await this.writeCheckpoint({ jobId, phase: status, cursors, counts: counts || manifest.collection.counts });
     return manifest;
   }
 }

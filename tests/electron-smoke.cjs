@@ -103,7 +103,7 @@ async function run() {
     } else {
       setTimeout(() => {
         mockAccounts = { ...mockAccounts, accounts: mockAccounts.accounts.map((account) => ({ ...account, authenticated: false })) };
-        event.sender.send("desktop:qzone:collector-event", { type: "complete", jobId, progress: 100, phase: "collection_complete", message: "采集完成", archivePath: "C:\\Users\\Tester\\Documents\\空间备份\\QQ-5678-test", schemaVersion: 1, mode: "incremental", changes: { added: 1, updated: 0, skipped: 2 }, counts: { entries: 1, media: 0, comments: 1, likes: 1 } });
+        event.sender.send("desktop:qzone:collector-event", { type: "complete", jobId, progress: 100, phase: "collection_partial", message: "已保存当前可读取范围", archivePath: "C:\\Users\\Tester\\Documents\\空间备份\\QQ-5678-test", schemaVersion: 1, mode: "partial", truncated: true, changes: { added: 1, updated: 0, skipped: 2 }, counts: { entries: 1, media: 0, comments: 1, likes: 1 } });
       }, 90);
     }
     return { jobId, archivePath: "C:\\Users\\Tester\\Documents\\空间备份\\QQ-12345678", accountLabel: "QQ ••••5678" };
@@ -123,7 +123,7 @@ async function run() {
     return { repaired: true, quarantinedEntries: 0, mediaMarkedForRedownload: 0 };
   });
   ipcMain.handle("desktop:qzone:cancel-collection", () => ({ cancelled: true }));
-  ipcMain.handle("desktop:app:info", () => ({ name: "空间备份", version: "0.3.2-alpha", platform: process.platform, packaged: false }));
+  ipcMain.handle("desktop:app:info", () => ({ name: "空间备份", version: "0.3.3-alpha", platform: process.platform, packaged: false }));
   const window = new BrowserWindow({
     width: 1120,
     height: 720,
@@ -290,6 +290,7 @@ async function run() {
       collectionComplete: document.body.innerText.includes("1 条内容已归档"),
       showsIncrementalStats: document.body.innerText.includes("本次新增 1 条、更新 0 条、跳过 2 条"),
       showsTemporarySessionCleared: document.body.innerText.includes("QQ 临时会话已自动清除"),
+      showsPartialWarning: document.body.innerText.includes("只返回了部分时间线") && document.body.innerText.includes("再次备份"),
       showsArchivePath: document.querySelector(".archive-path")?.textContent.includes("QQ-5678-test") === true
     };
     findButton("打开我的档案")?.click();
@@ -315,6 +316,7 @@ async function run() {
   assert.equal(backupFlow.collectionComplete, true);
   assert.equal(backupFlow.showsIncrementalStats, true);
   assert.equal(backupFlow.showsTemporarySessionCleared, true);
+  assert.equal(backupFlow.showsPartialWarning, true);
   assert.equal(backupFlow.showsArchivePath, true);
   assert.equal(backupFlow.openedRealArchive, true);
   assert.equal(backupFlow.showsExternalLink, true);

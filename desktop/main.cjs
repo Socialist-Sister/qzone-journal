@@ -736,7 +736,8 @@ function publicCollectorEvent(message) {
     archivePath: type === "complete" && message?.archivePath ? String(message.archivePath) : "",
     counts: message?.counts && typeof message.counts === "object" ? message.counts : undefined,
     changes,
-    mode: type === "complete" && ["full", "incremental"].includes(message?.mode) ? message.mode : undefined,
+    mode: type === "complete" && ["full", "incremental", "partial"].includes(message?.mode) ? message.mode : undefined,
+    truncated: type === "complete" ? Boolean(message?.truncated) : undefined,
     schemaVersion: type === "complete" ? Number(message?.schemaVersion) || 1 : undefined,
   };
 }
@@ -768,6 +769,11 @@ async function startCollectorJob(sender, input) {
   child.on("message", (message) => {
     void (async () => {
       const event = publicCollectorEvent(message);
+      if (["error", "cancelled"].includes(event.type)) {
+        // Trust the archive on disk over possibly stale worker counters. This
+        // also recovers archives written by older builds before indexing.
+        event.counts = await new ArchiveStore(archiveRoot).summarize();
+      }
       const terminalWithArchive = event.type === "complete"
         || (["error", "cancelled"].includes(event.type) && Number(event.counts?.entries || 0) > 0);
       if (terminalWithArchive) {

@@ -222,14 +222,22 @@ function feedIdentity(rawItem) {
   const html = decodeEscapedHtml(rawItem?.html || "");
   const feedData = html.match(/name=["']feed_data["']\s*([^>]*)>/i)?.[1] || "";
   const feedId = html.match(/id=["']feed_(\d+)_(\d+)_(\d+)_(\d+)_\d+_\d+["']/i);
+  const feedDataIndex = html.search(/name=["']feed_data["']/i);
+  const publisherRegion = feedDataIndex >= 0 ? html.slice(0, feedDataIndex) : html;
+  const publisherCard = [...publisherRegion.matchAll(/<div\b[^>]*class=["'][^"']*\bf-nick\b[^"']*["'][^>]*>([\s\S]*?)<\/div>/gi)].at(-1)?.[1] || "";
+  const publisherCardUin = publisherCard.match(/nameCard_(\d+)/i)?.[1]
+    || attribute(publisherCard, "uin");
+  const feedDataUin = attribute(feedData, "uin");
+  const authorUin = String(publisherCardUin || feedDataUin || feedId?.[1] || rawItem?.opuin || "");
   return {
     html,
     feedData,
     feedId,
-    // feed_data.uin can name the original author inside a forwarded card.
-    // opuin/feed id identify the account that published this timeline item.
-    authorUin: String(rawItem?.opuin || feedId?.[1] || attribute(feedData, "uin") || ""),
-    originalAuthorUin: attribute(feedData, "origuin") || attribute(feedData, "uin"),
+    // The publisher card before feed_data is the strongest signal. QQ's
+    // rawItem.opuin is not consistently the timeline publisher in scope=1.
+    authorUin,
+    originalAuthorUin: attribute(feedData, "origuin")
+      || (feedDataUin && feedDataUin !== authorUin ? feedDataUin : ""),
     appid: String(rawItem?.appid || feedId?.[2] || ""),
   };
 }

@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.3.3-alpha] - 2026-08-30
+
+### 修复
+
+- 修复 `scope=1` 响应中 `rawItem.opuin` 不代表时间线发布者时，本人说说全部被过滤并显示 0 条的问题；发布者现在优先取正文前的发布者名片与 `feed_data.uin`，原作者单独取 `data-origuin`。
+- 修复解析器迁移回滚后记录文件存在、但清单计数错误恢复为 0，导致主进程不建立档案索引的问题。
+- 主进程在失败或取消后以磁盘实际记录重新汇总，不再信任可能过期的工作进程计数。
+
+### 兼容性
+
+- 个人时间线的后续页被 QQ 拒绝时，自动尝试 `scope=0 + 本人过滤` 的兼容读取路径。
+- 若兼容路径仍无法取得更早内容，合并本轮新记录与旧档案、标记为“部分完成”并立即开放查看，不再把已取回内容全部回滚或伪装成完整备份。
+- 新增发布者字段回归、磁盘计数恢复、迁移合并与部分完成流程测试。
+
 ## [0.3.2-alpha] - 2026-08-30
 
 ### 修复
@@ -94,6 +108,7 @@
 - QQ 非公开接口可能随服务端变化。
 - 安装包尚未进行代码签名。
 
+[0.3.3-alpha]: https://github.com/Socialist-Sister/qzone-journal/releases/tag/v0.3.3-alpha
 [0.3.2-alpha]: https://github.com/Socialist-Sister/qzone-journal/releases/tag/v0.3.2-alpha
 [0.3.1-alpha]: https://github.com/Socialist-Sister/qzone-journal/releases/tag/v0.3.1-alpha
 [0.3.0-alpha]: https://github.com/Socialist-Sister/qzone-journal/releases/tag/v0.3.0-alpha

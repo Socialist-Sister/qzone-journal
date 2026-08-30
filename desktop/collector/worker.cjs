@@ -46,13 +46,14 @@ async function run(job) {
   const changes = { added: 0, updated: 0, skipped: 0 };
   let incrementalMode = false;
   let stoppedAtKnownPage = false;
+  let paginationTruncated = null;
 
   try {
     emit("progress", { jobId: job.jobId, progress: 5, phase: "initializing", message: "正在建立本地归档目录…" });
     const previousCheckpoint = await store.readCheckpoint();
     const initialization = await store.initialize({ ownerUin: job.ownerUin, jobId: job.jobId, options: job.options });
     counts = await store.summarize();
-    const canResume = !initialization.migrationRequired && ["collecting_posts", "cancelled", "failed"].includes(previousCheckpoint?.phase);
+    const canResume = !initialization.migrationRequired && ["collecting_posts", "cancelled", "failed", "partial"].includes(previousCheckpoint?.phase);
     let resumeCursor = canResume ? String(previousCheckpoint?.cursors?.posts || "") : "";
     let resumeScope = canResume && Number(previousCheckpoint?.cursors?.postScope) === 0 ? 0 : 1;
     const lastFullScanAt = Date.parse(String(initialization.manifest.collection?.lastFullScanAt || ""));
@@ -91,13 +92,22 @@ async function run(job) {
       let pageNumber = 0;
       let processedEntries = 0;
       let hasMore = true;
+      let usedScopeFallback = false;
       const seenCursors = new Set();
       while (hasMore && pageNumber < 500) {
         throwIfCancelled();
         pageNumber += 1;
-        const page = job.testMode
-          ? { entries: pageNumber === 1 ? job.testEntries || [] : [], rawCount: pageNumber === 1 ? (job.testEntries || []).length : 0, hasMore: false, cursor: "" }
-          : await fetchMoodPage({
+        let page;
+        let pageError = null;
+        try {
+          if (job.testMode && Number(job.testAuthAfterPage) === pageNumber) {
+            const error = new Error("simulated later-page authentication failure");
+            error.code = -10001;
+            throw error;
+          }
+          page = job.testMode
+            ? { entries: pageNumber === 1 ? job.testEntries || [] : [], rawCount: pageNumber === 1 ? (job.testEntries || []).length : 0, hasMore: Boolean(job.testAuthAfterPage && pageNumber === 1), cursor: pageNumber === 1 ? "test-page-2" : "" }
+            : await fetchMoodPage({
               uin: job.ownerUin,
               gTk: job.gTk,
               cursor,
@@ -106,6 +116,58 @@ async function run(job) {
               signal: activeAbortController.signal,
               resetStaleCursor: pageNumber === 1 && Boolean(resumeCursor),
             });
+        } catch (error) {
+          pageError = error;
+        }
+        if (pageError && !job.testMode && isAuthenticationFailure(pageError?.code) && processedEntries > 0 && feedScope === 1 && !usedScopeFallback) {
+          emit("progress", {
+            jobId: job.jobId,
+            progress: 70,
+            phase: "switching_feed_scope",
+            message: "个人时间线后续页暂不可用，正在尝试兼容读取路径…",
+            changes,
+          });
+          try {
+            page = await fetchMoodPage({
+              uin: job.ownerUin,
+              gTk: job.gTk,
+              cursor: "",
+              count: FEEDS3_PAGE_SIZE,
+              scope: 0,
+              signal: activeAbortController.signal,
+              resetStaleCursor: false,
+            });
+            cursor = "";
+            feedScope = 0;
+            usedScopeFallback = true;
+            paginationTruncated = {
+              code: String(pageError.code),
+              pageNumber,
+              feedScope: 0,
+              usedScopeFallback: true,
+            };
+            seenCursors.clear();
+            page.diagnostic = { ...(page.diagnostic || {}), usedPaginationScopeFallback: true };
+            pageError = null;
+          } catch (fallbackError) {
+            pageError = fallbackError;
+          }
+        }
+        if (pageError) {
+          if (isAuthenticationFailure(pageError?.code) && processedEntries > 0) {
+            paginationTruncated = { code: String(pageError.code), pageNumber, feedScope };
+            await store.writeDiagnostic("pagination-truncated", {
+              reason: "later_page_rejected",
+              parserCode: String(pageError.code),
+              pageNumber,
+              feedScope,
+              savedEntries: counts.entries,
+            });
+            hasMore = false;
+            break;
+          }
+          throw pageError;
+        }
         feedScope = Number(page.requestScope) === 0 ? 0 : 1;
         if (page.resumeCursorReset) {
           await store.writeDiagnostic("resume-cursor-reset", {
@@ -198,13 +260,15 @@ async function run(job) {
 
     emit("progress", { jobId: job.jobId, progress: 96, phase: "archive_ready", message: "正在写入归档清单与本地索引…" });
     throwIfCancelled();
+    if (parserMigration) counts = await store.mergeParserMigrationPrevious(parserMigration);
     counts = await store.summarize();
     await store.complete({
       jobId: job.jobId,
-      status: "complete",
+      status: paginationTruncated ? "partial" : "complete",
       counts,
       changes,
-      fullScanCompleted: !stoppedAtKnownPage,
+      fullScanCompleted: !stoppedAtKnownPage && !paginationTruncated,
+      cursors: paginationTruncated ? activeCursors : {},
     });
     if (parserMigration) {
       await store.commitParserMigration(parserMigration);
@@ -216,10 +280,13 @@ async function run(job) {
       archivePath: job.archiveRoot,
       counts,
       changes,
-      mode: stoppedAtKnownPage ? "incremental" : "full",
+      mode: paginationTruncated ? "partial" : stoppedAtKnownPage ? "incremental" : "full",
+      truncated: Boolean(paginationTruncated),
       schemaVersion: 1,
-      phase: "collection_complete",
-      message: `已将 ${counts.entries} 条内容写入本地档案`,
+      phase: paginationTruncated ? "collection_partial" : "collection_complete",
+      message: paginationTruncated
+        ? `QQ 暂未继续返回更早内容，已保存当前可读取的 ${counts.entries} 条内容`
+        : `已将 ${counts.entries} 条内容写入本地档案`,
     });
   } catch (error) {
     const cancelled = activeAbortController?.signal.aborted;

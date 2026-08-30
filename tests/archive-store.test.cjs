@@ -162,9 +162,12 @@ test("parser migration keeps legacy entries visible until collection starts and 
   await store.writeEntry({ sourceId: "legacy-post", type: "post", createdAt: "2026-08-28T00:00:00.000Z", text: "新解析正文" });
   const restored = await store.rollbackParserMigration(transaction);
   const entries = await store.readEntries();
+  const restoredManifest = await readJson(manifestPath);
   const state = await readJson(path.join(rootPath, "state", "parser-migration-transaction.json"));
   assert.equal(entries.length, 1);
   assert.equal(entries[0].text, "\\t旧解析正文");
+  assert.equal(restored.counts.entries, 1);
+  assert.equal(restoredManifest.collection.counts.entries, 1);
   assert.deepEqual(restored.cursors, {});
   assert.equal(state.phase, "rolled_back");
   assert.equal((await fs.readdir(path.join(rootPath, ...transaction.quarantineRelativePath.split("/"), "failed-new"))).length, 1);
@@ -201,6 +204,7 @@ test("successful parser migration keeps the old records in diagnostics and commi
   const store = new ArchiveStore(rootPath);
   await store.initialize({ ownerUin: "12345678", jobId: "legacy-job", options });
   await store.writeEntry({ sourceId: "legacy-post", type: "post", createdAt: "2026-08-28T00:00:00.000Z", text: "旧解析正文" });
+  await store.writeEntry({ sourceId: "legacy-unseen", type: "post", createdAt: "2026-08-27T00:00:00.000Z", text: "本轮未返回但必须保留" });
   const manifestPath = path.join(rootPath, "manifest.json");
   const manifest = await readJson(manifestPath);
   manifest.collection.parserVersion = 1;
@@ -208,7 +212,7 @@ test("successful parser migration keeps the old records in diagnostics and commi
   await store.initialize({ ownerUin: "12345678", jobId: "migration-job", options });
   const transaction = await store.beginParserMigration({ jobId: "migration-job" });
   await store.writeEntry({ sourceId: "legacy-post", type: "post", createdAt: "2026-08-28T00:00:00.000Z", text: "新解析正文" });
-  const counts = await store.summarize();
+  const counts = await store.mergeParserMigrationPrevious(transaction);
   await store.complete({ jobId: "migration-job", status: "complete", counts });
   await store.commitParserMigration(transaction);
 
@@ -216,6 +220,6 @@ test("successful parser migration keeps the old records in diagnostics and commi
   const entries = await store.readEntries();
   const previousDirectory = path.join(rootPath, ...transaction.quarantineRelativePath.split("/"), "previous");
   assert.equal(committedManifest.collection.parserVersion, 4);
-  assert.equal(entries[0].text, "新解析正文");
-  assert.equal((await fs.readdir(previousDirectory)).length, 1);
+  assert.deepEqual(entries.map((entry) => entry.text).sort(), ["新解析正文", "本轮未返回但必须保留"].sort());
+  assert.equal((await fs.readdir(previousDirectory)).length, 2);
 });
