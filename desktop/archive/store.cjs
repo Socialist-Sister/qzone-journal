@@ -3,6 +3,25 @@ const path = require("node:path");
 const { createHash, randomUUID } = require("node:crypto");
 const { ARCHIVE_SCHEMA_VERSION, createManifest, isoNow, normalizeArchiveEntry } = require("./schema.cjs");
 const COLLECTOR_PARSER_VERSION = 3;
+const PARSER_MIGRATION_STATE = "parser-migration-transaction.json";
+
+async function listJsonNames(directory) {
+  try {
+    return (await fs.readdir(directory)).filter((name) => name.endsWith(".json"));
+  } catch (error) {
+    if (error?.code === "ENOENT") return [];
+    throw error;
+  }
+}
+
+async function fileExists(filePath) {
+  try {
+    await fs.access(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 async function readJson(filePath, fallback = null) {
   try {
@@ -49,54 +68,193 @@ class ArchiveStore {
   }
 
   async initialize({ ownerUin, jobId, options }) {
+    const directories = ["records/entries", "records/people", "media/files", "state", "diagnostics"];
+    await Promise.all(directories.map((directory) => fs.mkdir(path.join(this.rootPath, directory), { recursive: true })));
+    await this.recoverInterruptedParserMigration();
+
     const existing = await readJson(this.manifestPath);
-    let existingCheckpoint = await readJson(path.join(this.rootPath, "state", "checkpoint.json"), {});
+    const existingCheckpoint = await readJson(path.join(this.rootPath, "state", "checkpoint.json"), {});
     const mediaIndexPath = path.join(this.rootPath, "media", "index.json");
     const existingMediaIndex = await readJson(mediaIndexPath, {
       schemaVersion: ARCHIVE_SCHEMA_VERSION,
       items: {},
     });
-    if (existing && existing.schemaVersion !== ARCHIVE_SCHEMA_VERSION) throw new Error(`暂不支持归档结构版本 ${existing.schemaVersion}`);
-    const directories = ["records/entries", "records/people", "media/files", "state", "diagnostics"];
-    await Promise.all(directories.map((directory) => fs.mkdir(path.join(this.rootPath, directory), { recursive: true })));
-    let migratedEntries = 0;
-    if (existing && Number(existing.collection?.parserVersion || 0) < COLLECTOR_PARSER_VERSION) {
-      const entriesDirectory = path.join(this.rootPath, "records", "entries");
-      const names = (await fs.readdir(entriesDirectory)).filter((name) => name.endsWith(".json"));
-      if (names.length) {
-        const fromVersion = Number(existing.collection?.parserVersion || 1);
-        const quarantineDirectory = path.join(this.rootPath, "diagnostics", "migrations", `parser-v${fromVersion}-${Date.now()}`);
-        await fs.mkdir(quarantineDirectory, { recursive: true });
-        for (const name of names) await fs.rename(path.join(entriesDirectory, name), path.join(quarantineDirectory, name));
-        migratedEntries = names.length;
-      }
-      existingCheckpoint = {};
+    if (existing && existing.schemaVersion !== ARCHIVE_SCHEMA_VERSION) {
+      throw new Error("暂不支持归档结构版本 " + existing.schemaVersion);
     }
+
+    const previousParserVersion = existing
+      ? Math.max(1, Number(existing.collection?.parserVersion || 1))
+      : COLLECTOR_PARSER_VERSION;
+    const migrationRequired = Boolean(existing && previousParserVersion < COLLECTOR_PARSER_VERSION);
     const manifest = createManifest({ ownerUin, jobId, options, existing });
-    manifest.collection.parserVersion = COLLECTOR_PARSER_VERSION;
-    if (migratedEntries) manifest.collection.counts = { entries: 0, media: 0, mediaBytes: 0, comments: 0, likes: 0 };
+    manifest.collection.parserVersion = migrationRequired ? previousParserVersion : COLLECTOR_PARSER_VERSION;
+    if (migrationRequired) {
+      manifest.collection.migrationPending = {
+        fromParserVersion: previousParserVersion,
+        toParserVersion: COLLECTOR_PARSER_VERSION,
+      };
+    }
     await atomicWriteJson(this.manifestPath, manifest);
     await atomicWriteJson(path.join(this.rootPath, "state", "checkpoint.json"), {
       schemaVersion: ARCHIVE_SCHEMA_VERSION,
       jobId,
       phase: "initialized",
-      cursors: existingCheckpoint?.phase === "collecting_posts" || existingCheckpoint?.phase === "cancelled" || existingCheckpoint?.phase === "failed"
+      cursors: !migrationRequired && (existingCheckpoint?.phase === "collecting_posts" || existingCheckpoint?.phase === "cancelled" || existingCheckpoint?.phase === "failed")
         ? existingCheckpoint.cursors || {}
         : {},
       counts: existingCheckpoint?.counts || existing?.collection?.counts || {},
       updatedAt: isoNow(),
     });
     await atomicWriteJson(mediaIndexPath, existingMediaIndex);
-    if (migratedEntries) {
-      await atomicWriteJson(path.join(this.rootPath, "diagnostics", "parser-migration.json"), {
-        schemaVersion: ARCHIVE_SCHEMA_VERSION,
-        fromParserVersion: Number(existing.collection?.parserVersion || 1),
-        toParserVersion: COLLECTOR_PARSER_VERSION,
-        quarantinedEntries: migratedEntries,
-        migratedAt: isoNow(),
+    return { manifest, migrationRequired, previousParserVersion };
+  }
+
+  async readParserMigrationState() {
+    return readJson(path.join(this.rootPath, "state", PARSER_MIGRATION_STATE), null);
+  }
+
+  async recoverInterruptedParserMigration() {
+    const transaction = await this.readParserMigrationState();
+    if (!transaction || !["preparing", "in_progress"].includes(transaction.phase)) return null;
+    return this.rollbackParserMigration(transaction, { reason: "startup_recovery" });
+  }
+
+  async beginParserMigration({ jobId }) {
+    const manifest = await readJson(this.manifestPath);
+    if (!manifest) throw new Error("归档清单不存在");
+    const fromParserVersion = Math.max(1, Number(manifest.collection?.parserVersion || 1));
+    if (fromParserVersion >= COLLECTOR_PARSER_VERSION) return null;
+
+    const entriesDirectory = path.join(this.rootPath, "records", "entries");
+    const previousEntryNames = await listJsonNames(entriesDirectory);
+    const transactionId = randomUUID();
+    const quarantineRelativePath = path.posix.join(
+      "diagnostics",
+      "migrations",
+      "parser-v" + fromParserVersion + "-" + transactionId,
+    );
+    const quarantineDirectory = path.join(this.rootPath, ...quarantineRelativePath.split("/"));
+    const previousDirectory = path.join(quarantineDirectory, "previous");
+    const failedNewDirectory = path.join(quarantineDirectory, "failed-new");
+    const statePath = path.join(this.rootPath, "state", PARSER_MIGRATION_STATE);
+    const previousCheckpoint = await this.readCheckpoint();
+    const transaction = {
+      schemaVersion: ARCHIVE_SCHEMA_VERSION,
+      transactionId,
+      jobId,
+      phase: "preparing",
+      fromParserVersion,
+      toParserVersion: COLLECTOR_PARSER_VERSION,
+      quarantineRelativePath,
+      previousEntryNames,
+      previousCheckpoint,
+      previousCollection: manifest.collection,
+      startedAt: isoNow(),
+    };
+
+    await fs.mkdir(previousDirectory, { recursive: true });
+    await fs.mkdir(failedNewDirectory, { recursive: true });
+    await atomicWriteJson(statePath, transaction);
+    try {
+      for (const name of previousEntryNames) {
+        const source = path.join(entriesDirectory, name);
+        if (await fileExists(source)) await fs.rename(source, path.join(previousDirectory, name));
+      }
+      transaction.phase = "in_progress";
+      transaction.quarantinedEntries = previousEntryNames.length;
+      await atomicWriteJson(statePath, transaction);
+      manifest.collection = {
+        ...manifest.collection,
+        status: "migrating_parser",
+        activeJobId: jobId,
+        migrationPending: {
+          transactionId,
+          fromParserVersion,
+          toParserVersion: COLLECTOR_PARSER_VERSION,
+        },
+        counts: { entries: 0, media: 0, mediaBytes: 0, comments: 0, likes: 0 },
+      };
+      await atomicWriteJson(this.manifestPath, manifest);
+      await this.writeCheckpoint({
+        jobId,
+        phase: "parser_migration",
+        cursors: {},
+        counts: manifest.collection.counts,
       });
+      return transaction;
+    } catch (error) {
+      await this.rollbackParserMigration(transaction, { reason: "migration_setup_failed" }).catch(() => undefined);
+      throw error;
     }
-    return manifest;
+  }
+
+  async rollbackParserMigration(transaction, { reason = "collection_failed" } = {}) {
+    if (!transaction?.quarantineRelativePath) return null;
+    const entriesDirectory = path.join(this.rootPath, "records", "entries");
+    const quarantineDirectory = path.join(this.rootPath, ...String(transaction.quarantineRelativePath).split("/"));
+    const previousDirectory = path.join(quarantineDirectory, "previous");
+    const failedNewDirectory = path.join(quarantineDirectory, "failed-new");
+    await fs.mkdir(entriesDirectory, { recursive: true });
+    await fs.mkdir(failedNewDirectory, { recursive: true });
+
+    const previousNames = new Set(Array.isArray(transaction.previousEntryNames) ? transaction.previousEntryNames : []);
+    for (const name of await listJsonNames(entriesDirectory)) {
+      const previousWasMoved = await fileExists(path.join(previousDirectory, name));
+      if (previousNames.has(name) && !previousWasMoved) continue;
+      const suffix = await fileExists(path.join(failedNewDirectory, name)) ? "." + randomUUID() : "";
+      await fs.rename(path.join(entriesDirectory, name), path.join(failedNewDirectory, name + suffix));
+    }
+    for (const name of await listJsonNames(previousDirectory)) {
+      const target = path.join(entriesDirectory, name);
+      if (await fileExists(target)) {
+        await fs.rename(target, path.join(failedNewDirectory, name + "." + randomUUID()));
+      }
+      await fs.rename(path.join(previousDirectory, name), target);
+    }
+
+    const manifest = await readJson(this.manifestPath);
+    if (manifest && transaction.previousCollection) {
+      manifest.collection = transaction.previousCollection;
+      manifest.updatedAt = isoNow();
+      await atomicWriteJson(this.manifestPath, manifest);
+    }
+    const rollbackState = {
+      ...transaction,
+      phase: "rolled_back",
+      rollbackReason: reason,
+      rolledBackAt: isoNow(),
+    };
+    await atomicWriteJson(path.join(this.rootPath, "state", PARSER_MIGRATION_STATE), rollbackState);
+    if (transaction.previousCheckpoint) await this.writeCheckpoint(transaction.previousCheckpoint);
+    return {
+      counts: transaction.previousCollection?.counts || { entries: 0, media: 0, mediaBytes: 0, comments: 0, likes: 0 },
+      cursors: transaction.previousCheckpoint?.cursors || {},
+    };
+  }
+
+  async commitParserMigration(transaction) {
+    if (!transaction?.quarantineRelativePath) return null;
+    const manifest = await readJson(this.manifestPath);
+    if (!manifest) throw new Error("归档清单不存在");
+    manifest.collection.parserVersion = COLLECTOR_PARSER_VERSION;
+    delete manifest.collection.migrationPending;
+    await atomicWriteJson(this.manifestPath, manifest);
+    const committedState = {
+      ...transaction,
+      phase: "committed",
+      committedAt: isoNow(),
+    };
+    await atomicWriteJson(path.join(this.rootPath, "state", PARSER_MIGRATION_STATE), committedState);
+    await this.writeDiagnostic("parser-migration", {
+      transactionId: transaction.transactionId,
+      fromParserVersion: transaction.fromParserVersion,
+      toParserVersion: transaction.toParserVersion,
+      quarantinedEntries: transaction.quarantinedEntries || 0,
+      quarantineRelativePath: transaction.quarantineRelativePath,
+      status: "committed",
+    });
+    return committedState;
   }
 
   async writeEntry(input) {

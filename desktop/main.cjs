@@ -496,11 +496,13 @@ async function readLatestArchive(accountId) {
     };
   }).sort((a, b) => String(b.date).localeCompare(String(a.date)));
   const years = entries.map((entry) => Number(String(entry.date).slice(0, 4))).filter(Number.isFinite);
-  const imported = manifest.updatedAt ? new Date(manifest.updatedAt) : new Date();
+  const completedAt = manifest.collection?.lastCompletedAt || manifest.updatedAt;
+  const imported = completedAt ? new Date(completedAt) : new Date();
   return {
     id: String(manifest.archiveId || "local-qzone-archive"),
     isDemo: false,
     profileName: `${String(accountIndex.accountLabel || "QQ 空间")}的空间`,
+    lastBackupAt: imported.toISOString(),
     importedAt: new Intl.DateTimeFormat("zh-CN", { dateStyle: "long", timeStyle: "short" }).format(imported),
     range: years.length ? `${Math.min(...years)}—${Math.max(...years)}` : "尚无内容",
     entries,

@@ -91,6 +91,7 @@ async function run() {
     id: "local-test",
     isDemo: false,
     profileName: "QQ ••••5678的空间",
+    lastBackupAt: "2026-08-29T10:00:00+08:00",
     importedAt: "2026年8月29日 10:00",
     range: "2026—2026",
     entries: [{ id: "real-post-1", type: "post", date: "2026-08-29T10:00:00+08:00", displayDate: "2026年8月29日 10:00", title: null, text: "真实归档流程测试", images: [], likes: ["小周"], comments: [{ name: "小周", text: "测试评论" }] }],

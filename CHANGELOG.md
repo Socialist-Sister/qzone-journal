@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.1.1-alpha] - 2026-08-30
+
+### 修复
+
+- 首页“上次备份”不再固定显示“刚刚”，会按最后一次成功备份时间自动更新。
+- 失败或取消的采集不会错误刷新最后备份时间。
+
+### 改进
+
+- 解析器升级改为事务式迁移；登录失效、采集失败或取消时自动恢复旧档案。
+- 应用在迁移过程中异常退出后，会在下次启动时自动回滚未完成事务。
+- 成功迁移后仍将旧版记录保留在档案诊断目录，便于恢复和排查。
+- 新增正式版优化清单，按 Alpha、Beta、RC 和 v1.0 发布门槛推进。
+
 ## [0.1.0-alpha] - 2026-08-29
 
 首个公开 Alpha 版本。
@@ -19,4 +33,5 @@
 - QQ 非公开接口可能随服务端变化。
 - 安装包尚未进行代码签名。
 
+[0.1.1-alpha]: https://github.com/Socialist-Sister/qzone-journal/releases/tag/v0.1.1-alpha
 [0.1.0-alpha]: https://github.com/Socialist-Sister/qzone-journal/releases/tag/v0.1.0-alpha

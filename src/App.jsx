@@ -43,6 +43,7 @@ import {
   CornersIn,
 } from "@phosphor-icons/react";
 import { demoArchive, getDemoStats } from "./mockArchive";
+import { formatBackupRelativeTime } from "./relativeTime";
 
 const navItems = [
   { id: "home", label: "首页", icon: House },
@@ -202,6 +203,18 @@ function TitleBar({ activeView, onNavigate, onWindowAction, isMaximized, account
 
 function Home({ onStart, archive }) {
   const archiveCount = archive ? getDemoStats(archive).total : 0;
+  const [relativeTimeNow, setRelativeTimeNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (!archive?.lastBackupAt) return undefined;
+    setRelativeTimeNow(Date.now());
+    const timer = window.setInterval(() => setRelativeTimeNow(Date.now()), 30_000);
+    return () => window.clearInterval(timer);
+  }, [archive?.lastBackupAt]);
+
+  const lastBackupLabel = archive?.lastBackupAt
+    ? formatBackupRelativeTime(archive.lastBackupAt, relativeTimeNow)
+    : archive?.importedAt || "时间未知";
   return (
     <section className="home-view" aria-labelledby="home-title">
       <div className="hero-copy">
@@ -218,7 +231,7 @@ function Home({ onStart, archive }) {
         {archive && (
           <button className="last-backup" type="button" onClick={onStart}>
             <ClockCounterClockwise size={18} />
-            <span>上次备份：刚刚 · {archiveCount} 条内容</span>
+            <span>上次备份：{lastBackupLabel} · {archiveCount} 条内容</span>
           </button>
         )}
       </div>
@@ -1474,15 +1487,18 @@ function BackupDialog({ onClose, onComplete, onAccountChange }) {
 
 function loadSavedArchive() {
   try {
-    return window.localStorage.getItem("qzone-journal-demo-loaded") === "true" ? demoArchive : null;
+    if (window.localStorage.getItem("qzone-journal-demo-loaded") !== "true") return null;
+    const lastBackupAt = window.localStorage.getItem("qzone-journal-demo-imported-at") || new Date().toISOString();
+    return { ...demoArchive, lastBackupAt };
   } catch {
     return null;
   }
 }
 
-function rememberDemoArchive() {
+function rememberDemoArchive(archive) {
   try {
     window.localStorage.setItem("qzone-journal-demo-loaded", "true");
+    window.localStorage.setItem("qzone-journal-demo-imported-at", archive.lastBackupAt);
   } catch {
     // The in-memory archive still works when local storage is unavailable.
   }
@@ -1595,15 +1611,18 @@ export function App() {
 
   const start = (method = "app") => setDialogMethod(method);
   const complete = (collectedArchive) => {
-    const nextArchive = collectedArchive?.entries ? collectedArchive : demoArchive;
+    const nextArchive = collectedArchive?.entries
+      ? collectedArchive
+      : { ...demoArchive, lastBackupAt: new Date().toISOString() };
     setArchiveData(nextArchive);
-    if (nextArchive.isDemo) rememberDemoArchive();
+    if (nextArchive.isDemo) rememberDemoArchive(nextArchive);
     setDialogMethod(null);
     setActiveView("archive");
   };
   const completeDemoImport = () => {
-    setArchiveData(demoArchive);
-    rememberDemoArchive();
+    const nextArchive = { ...demoArchive, lastBackupAt: new Date().toISOString() };
+    setArchiveData(nextArchive);
+    rememberDemoArchive(nextArchive);
     setDemoDialogOpen(false);
     setActiveView("archive");
   };

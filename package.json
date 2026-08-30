@@ -1,6 +1,6 @@
 {
   "name": "qzone-journal",
-  "version": "0.1.0-alpha",
+  "version": "0.1.1-alpha",
   "description": "Local-first QQ Space archive desktop application.",
   "author": "QZone Journal Contributors",
   "license": "MIT",
@@ -26,7 +26,7 @@
     "preview": "vite preview",
     "test:desktop": "pnpm run build:web && electron tests/electron-smoke.cjs",
     "test:collector": "electron tests/collector-process-smoke.cjs",
-    "test:archive": "node --test tests/archive-store.test.cjs tests/qzone-parser.test.cjs",
+    "test:archive": "node --test tests/archive-store.test.cjs tests/qzone-parser.test.cjs tests/relative-time.test.mjs",
     "test:ai-compat": "electron tests/ai-compat-smoke.cjs",
     "test:sites": "node --test tests/sites-worker.test.mjs"
   },

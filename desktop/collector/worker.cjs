@@ -42,15 +42,16 @@ async function run(job) {
   const mediaFailures = [];
   const pageDiagnostics = [];
   let activeCursors = {};
+  let parserMigration = null;
 
   try {
     emit("progress", { jobId: job.jobId, progress: 5, phase: "initializing", message: "正在建立本地归档目录…" });
     const previousCheckpoint = await store.readCheckpoint();
-    await store.initialize({ ownerUin: job.ownerUin, jobId: job.jobId, options: job.options });
+    const initialization = await store.initialize({ ownerUin: job.ownerUin, jobId: job.jobId, options: job.options });
     counts = await store.summarize();
-    const canResume = ["collecting_posts", "cancelled", "failed"].includes(previousCheckpoint?.phase);
-    const resumeCursor = canResume ? String(previousCheckpoint?.cursors?.posts || "") : "";
-    const resumeScope = canResume && Number(previousCheckpoint?.cursors?.postScope) === 0 ? 0 : 1;
+    const canResume = !initialization.migrationRequired && ["collecting_posts", "cancelled", "failed"].includes(previousCheckpoint?.phase);
+    let resumeCursor = canResume ? String(previousCheckpoint?.cursors?.posts || "") : "";
+    let resumeScope = canResume && Number(previousCheckpoint?.cursors?.postScope) === 0 ? 0 : 1;
     activeCursors = { posts: resumeCursor, postScope: resumeScope };
     throwIfCancelled();
     await store.writeCheckpoint({ jobId: job.jobId, phase: "session_check", cursors: activeCursors, counts });
@@ -63,6 +64,13 @@ async function run(job) {
     await store.writeDiagnostic("session-check", sessionProbe);
 
     emit("progress", { jobId: job.jobId, progress: 30, phase: "planning", message: "正在准备增量采集计划…" });
+    if (initialization.migrationRequired) {
+      parserMigration = await store.beginParserMigration({ jobId: job.jobId });
+      counts = await store.summarize();
+      resumeCursor = "";
+      resumeScope = 1;
+      activeCursors = { posts: "", postScope: 1 };
+    }
     const plan = createCollectionPlan(job.options);
     throwIfCancelled();
     await store.writeDiagnostic("collection-plan", { items: plan });
@@ -140,6 +148,10 @@ async function run(job) {
     throwIfCancelled();
     counts = await store.summarize();
     await store.complete({ jobId: job.jobId, status: "complete", counts });
+    if (parserMigration) {
+      await store.commitParserMigration(parserMigration);
+      parserMigration = null;
+    }
     emit("complete", {
       jobId: job.jobId,
       progress: 100,
@@ -152,6 +164,14 @@ async function run(job) {
   } catch (error) {
     const cancelled = activeAbortController?.signal.aborted;
     try {
+      if (parserMigration) {
+        const restored = await store.rollbackParserMigration(parserMigration, {
+          reason: cancelled ? "collection_cancelled" : "collection_failed",
+        });
+        parserMigration = null;
+        counts = restored?.counts || counts;
+        activeCursors = restored?.cursors || activeCursors;
+      }
       if (!cancelled) {
         await store.writeDiagnostic("collection-error", {
           name: String(error?.name || "Error"),
