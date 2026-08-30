@@ -1,5 +1,5 @@
 const { ArchiveStore } = require("../archive/store.cjs");
-const { abortableDelay, createCollectionPlan, downloadMedia, fetchMoodPage, probeSession } = require("./qzone-adapter.cjs");
+const { FEEDS3_PAGE_SIZE, abortableDelay, createCollectionPlan, downloadMedia, fetchMoodPage, probeSession } = require("./qzone-adapter.cjs");
 const { isAuthenticationFailure } = require("./qzone-parser.cjs");
 
 const parentPort = process.parentPort;
@@ -101,7 +101,7 @@ async function run(job) {
               uin: job.ownerUin,
               gTk: job.gTk,
               cursor,
-              count: 50,
+              count: FEEDS3_PAGE_SIZE,
               scope: feedScope,
               signal: activeAbortController.signal,
               resetStaleCursor: pageNumber === 1 && Boolean(resumeCursor),
@@ -188,7 +188,7 @@ async function run(job) {
         if (nextCursor) seenCursors.add(nextCursor);
         cursor = nextCursor;
         activeCursors = { posts: cursor, postScope: feedScope };
-        if (hasMore && !job.testMode) await abortableDelay(350 + Math.floor(Math.random() * 250), activeAbortController.signal);
+        if (hasMore && !job.testMode) await abortableDelay(1200 + Math.floor(Math.random() * 600), activeAbortController.signal);
       }
       if (hasMore) throw new Error("说说页数超过 500 页安全限制，已保存恢复点，可再次运行继续");
       if (!processedEntries && !counts.entries) await store.writeDiagnostic("empty-post-stream", { message: "接口成功返回，但没有找到本人可归档的说说" });
@@ -246,6 +246,7 @@ async function run(job) {
     }
     emit(cancelled ? "cancelled" : "error", {
       jobId: job.jobId,
+      archivePath: job.archiveRoot,
       phase: !cancelled && isAuthenticationFailure(error?.code) ? "authentication_required" : "collection_failed",
       counts,
       changes,

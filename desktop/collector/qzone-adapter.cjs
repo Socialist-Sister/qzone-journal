@@ -3,6 +3,7 @@ const { enrichFeeds3Cursor, isAuthenticationFailure, normalizeMediaUrl, parseFee
 
 const QZONE_USER_URL = (uin) => `https://user.qzone.qq.com/${encodeURIComponent(uin)}`;
 const FEEDS3_URL = "https://user.qzone.qq.com/proxy/domain/ic2.qzone.qq.com/cgi-bin/feeds/feeds3_html_more";
+const FEEDS3_PAGE_SIZE = 20;
 
 function abortableDelay(milliseconds, signal) {
   return new Promise((resolve, reject) => {
@@ -15,7 +16,7 @@ function abortableDelay(milliseconds, signal) {
   });
 }
 
-function buildFeeds3Url({ uin, gTk, cursor = "", count = 50, scope = 1 }) {
+function buildFeeds3Url({ uin, gTk, cursor = "", count = FEEDS3_PAGE_SIZE, scope = 1 }) {
   // Checkpoints created by older builds can omit pagenum. Repair them before
   // the request so a later-page offset is never paired with pagenum=1.
   const requestCursor = enrichFeeds3Cursor(cursor);
@@ -56,12 +57,16 @@ function buildFeeds3Url({ uin, gTk, cursor = "", count = 50, scope = 1 }) {
   return `${FEEDS3_URL}?${params}`;
 }
 
-async function fetchMoodPageOnce({ uin, gTk, cursor = "", count = 50, signal, scope = 1 }) {
-  const url = buildFeeds3Url({ uin, gTk, cursor, count, scope });
+async function fetchMoodPageOnce({ uin, gTk, cursor = "", count = FEEDS3_PAGE_SIZE, signal, scope = 1 }, dependencies = {}) {
+  const fetchRequest = dependencies.fetch || net.fetch;
+  const delay = dependencies.delay || abortableDelay;
   let lastError;
+  let cursorAuthRetryUsed = false;
   for (let attempt = 0; attempt < 3; attempt += 1) {
     try {
-      const response = await net.fetch(url, {
+      // Rebuild the URL for every attempt so QQ receives fresh nonce fields.
+      const url = buildFeeds3Url({ uin, gTk, cursor, count, scope });
+      const response = await fetchRequest(url, {
         method: "GET",
         credentials: "include",
         redirect: "follow",
@@ -106,9 +111,16 @@ async function fetchMoodPageOnce({ uin, gTk, cursor = "", count = 50, signal, sc
         },
       };
     } catch (error) {
-      if (signal?.aborted || isAuthenticationFailure(error?.code)) throw error;
+      if (signal?.aborted) throw error;
+      if (isAuthenticationFailure(error?.code)) {
+        const canRetryCursor = Number(error?.code) === -10001 && Boolean(cursor) && !cursorAuthRetryUsed;
+        if (!canRetryCursor) throw error;
+        cursorAuthRetryUsed = true;
+        await delay(2200 + Math.floor(Math.random() * 600), signal);
+        continue;
+      }
       lastError = error;
-      if (attempt < 2) await abortableDelay(700 * (attempt + 1) + Math.floor(Math.random() * 350), signal);
+      if (attempt < 2) await delay(700 * (attempt + 1) + Math.floor(Math.random() * 350), signal);
     }
   }
   throw lastError || new Error("说说接口请求失败");
@@ -216,4 +228,4 @@ function createCollectionPlan(options) {
   }));
 }
 
-module.exports = { abortableDelay, buildFeeds3Url, createCollectionPlan, downloadMedia, fetchMoodPage, probeSession };
+module.exports = { FEEDS3_PAGE_SIZE, abortableDelay, buildFeeds3Url, createCollectionPlan, downloadMedia, fetchMoodPage, fetchMoodPageOnce, probeSession };

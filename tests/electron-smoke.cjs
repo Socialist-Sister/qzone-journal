@@ -116,14 +116,14 @@ async function run() {
     importedAt: "2026年8月29日 10:00",
     range: "2026—2026",
     integrity: { needsRepair: false, corruptEntries: [], missingMedia: [], unsafeMedia: [] },
-    entries: [{ id: "real-post-1", type: "post", date: "2026-08-29T10:00:00+08:00", displayDate: "2026年8月29日 10:00", title: null, text: "真实归档流程测试", images: [], likes: ["小周"], comments: [{ name: "小周", text: "测试评论" }] }],
+    entries: [{ id: "real-post-1", type: "post", date: "2026-08-29T10:00:00+08:00", displayDate: "2026年8月29日 10:00", title: null, text: "真实归档流程测试", links: [{ url: "https://www.bilibili.com/video/BV1Test", label: "转发的视频" }], images: [], likes: ["小周"], comments: [{ name: "小周", text: "测试评论" }] }],
   }));
   ipcMain.handle("desktop:qzone:repair-archive", () => {
     repairCalls += 1;
     return { repaired: true, quarantinedEntries: 0, mediaMarkedForRedownload: 0 };
   });
   ipcMain.handle("desktop:qzone:cancel-collection", () => ({ cancelled: true }));
-  ipcMain.handle("desktop:app:info", () => ({ name: "空间备份", version: "0.3.1-alpha", platform: process.platform, packaged: false }));
+  ipcMain.handle("desktop:app:info", () => ({ name: "空间备份", version: "0.3.2-alpha", platform: process.platform, packaged: false }));
   const window = new BrowserWindow({
     width: 1120,
     height: 720,
@@ -279,7 +279,7 @@ async function run() {
     await new Promise((resolve) => setTimeout(resolve, 40));
     findButton("开始创建本地档案")?.click();
     await new Promise((resolve) => setTimeout(resolve, 140));
-    const offeredForcedRelogin = document.body.innerText.includes("已经保存 2 条内容") && Boolean(findButton("重新扫码登录"));
+    const offeredForcedRelogin = document.body.innerText.includes("本地档案现有 2 条内容") && document.body.innerText.includes("我的档案") && Boolean(findButton("重新扫码登录"));
     findButton("重新扫码登录")?.click();
     await new Promise((resolve) => setTimeout(resolve, 40));
     findButton("开始创建本地档案")?.click();
@@ -295,6 +295,7 @@ async function run() {
     findButton("打开我的档案")?.click();
     await new Promise((resolve) => setTimeout(resolve, 40));
     result.openedRealArchive = document.body.innerText.includes("真实归档流程测试");
+    result.showsExternalLink = document.querySelector('.detail-links a[href^="https://www.bilibili.com/"]')?.textContent.includes("转发的视频") === true;
     result.archiveHasNoRepairAction = !findButton("检查与修复");
     findButton("设置")?.click();
     await new Promise((resolve) => setTimeout(resolve, 40));
@@ -316,6 +317,7 @@ async function run() {
   assert.equal(backupFlow.showsTemporarySessionCleared, true);
   assert.equal(backupFlow.showsArchivePath, true);
   assert.equal(backupFlow.openedRealArchive, true);
+  assert.equal(backupFlow.showsExternalLink, true);
   assert.equal(backupFlow.archiveHasNoRepairAction, true);
   assert.equal(backupFlow.hasRepairAction, true);
   assert.equal(backupFlow.repairCompleted, true);

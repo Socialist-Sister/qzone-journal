@@ -60,6 +60,15 @@ function normalizeArchiveEntry(entry) {
     updatedAt: entry?.updatedAt ? String(entry.updatedAt) : null,
     title: entry?.title ? String(entry.title) : null,
     text: String(entry?.text || ""),
+    links: Array.isArray(entry?.links) ? entry.links.slice(0, 20).flatMap((link) => {
+      try {
+        const url = new URL(String(link?.url || ""));
+        if (url.protocol !== "https:") return [];
+        return [{ url: url.toString(), label: String(link?.label || url.hostname).slice(0, 200) }];
+      } catch {
+        return [];
+      }
+    }) : [],
     location: entry?.location ? String(entry.location) : null,
     visibility: entry?.visibility ? String(entry.visibility) : "unknown",
     media: Array.isArray(entry?.media) ? entry.media : [],

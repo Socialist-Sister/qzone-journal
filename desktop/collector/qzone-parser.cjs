@@ -92,6 +92,62 @@ function normalizeMediaUrl(value) {
   }
 }
 
+function normalizeExternalUrl(value) {
+  let candidate = decodeHtmlEntities(String(value || "").trim());
+  if (candidate.startsWith("//")) candidate = `https:${candidate}`;
+  if (candidate.startsWith("http://")) candidate = `https://${candidate.slice(7)}`;
+  try {
+    const parsed = new URL(candidate);
+    if (parsed.protocol !== "https:") return "";
+    const host = parsed.hostname.toLowerCase();
+    if (host.endsWith("qpic.cn") || host.includes("photo.store.qq.com") || host.endsWith("photo.qq.com")) return "";
+    if (host === "c.pc.qq.com" || host === "url.cn") {
+      for (const name of ["pfurl", "url", "target"]) {
+        const nested = parsed.searchParams.get(name);
+        if (nested) {
+          const normalized = normalizeExternalUrl(nested);
+          if (normalized && !new URL(normalized).hostname.toLowerCase().endsWith("qq.com")) return normalized;
+        }
+      }
+    }
+    if (host.endsWith("qq.com") || host.endsWith("gtimg.cn") || host === "url.cn") return "";
+    parsed.hash = "";
+    return parsed.toString();
+  } catch {
+    return "";
+  }
+}
+
+function extractExternalLinks(html) {
+  const postHtml = String(html || "").split(/<[^>]+class=["'][^"']*mod-comments[^"']*["']/i)[0];
+  const links = new Map();
+  for (const match of postHtml.matchAll(/<a\b([^>]*)>([\s\S]*?)<\/a>/gi)) {
+    const attrs = match[1];
+    const candidate = ["href", "data-url", "data-href", "url"]
+      .map((name) => attribute(attrs, name))
+      .find(Boolean);
+    const url = normalizeExternalUrl(candidate);
+    if (!url || links.has(url)) continue;
+    const label = stripHtml(match[2]) || (() => {
+      try { return new URL(url).hostname; } catch { return "外部链接"; }
+    })();
+    links.set(url, { url, label: label.slice(0, 200) });
+    if (links.size >= 20) break;
+  }
+  // Some share/video cards keep the destination in serialized card data
+  // instead of an anchor. Scan only literal web URLs and apply the same host
+  // and protocol allow-list; never parse or evaluate the embedded object.
+  for (const match of decodeHtmlEntities(postHtml).matchAll(/https?:\/\/[^\s<>"'\\]+/gi)) {
+    const url = normalizeExternalUrl(match[0]);
+    if (!url || links.has(url)) continue;
+    let label = "外部链接";
+    try { label = new URL(url).hostname; } catch { /* Already validated above. */ }
+    links.set(url, { url, label });
+    if (links.size >= 20) break;
+  }
+  return [...links.values()];
+}
+
 function extractMedia(html) {
   const postHtml = String(html || "").split(/<[^>]+class=["'][^"']*mod-comments[^"']*["']/i)[0];
   const media = new Map();
@@ -170,7 +226,10 @@ function feedIdentity(rawItem) {
     html,
     feedData,
     feedId,
-    authorUin: attribute(feedData, "uin") || String(rawItem?.opuin || feedId?.[1] || ""),
+    // feed_data.uin can name the original author inside a forwarded card.
+    // opuin/feed id identify the account that published this timeline item.
+    authorUin: String(rawItem?.opuin || feedId?.[1] || attribute(feedData, "uin") || ""),
+    originalAuthorUin: attribute(feedData, "origuin") || attribute(feedData, "uin"),
     appid: String(rawItem?.appid || feedId?.[2] || ""),
   };
 }
@@ -191,7 +250,7 @@ function summarizeFeedItems(rawItems, ownerUin) {
 }
 
 function parseFeedItem(rawItem, ownerUin) {
-  const { html, feedData, feedId, authorUin, appid } = feedIdentity(rawItem);
+  const { html, feedData, feedId, authorUin, originalAuthorUin, appid } = feedIdentity(rawItem);
   if (ownerUin && authorUin && authorUin !== String(ownerUin)) return null;
   if (appid !== "311") return null;
   const sourceId = attribute(feedData, "tid")
@@ -208,6 +267,12 @@ function parseFeedItem(rawItem, ownerUin) {
   let text = [fInfoBefore, txtBoxBefore, txtBoxAfter, fallbackContent].map(stripHtml).find(Boolean) || "";
   const nickname = String(rawItem?.nickname || stripHtml(html.match(/class=["']f-name[^"']*["'][^>]*>([\s\S]*?)<\/a>/i)?.[1] || ""));
   if (nickname && text.startsWith(`${nickname}：`)) text = text.slice(nickname.length + 1).trim();
+  const typeId = String(rawItem?.typeid ?? attribute(feedData, "typeid") ?? "");
+  const originalSourceId = attribute(feedData, "origtid");
+  const shareTitle = stripHtml(rawItem?.appShareTitle || rawItem?.appname || rawItem?.appName || "");
+  const links = extractExternalLinks(html);
+  if (!text && shareTitle) text = shareTitle;
+  if (!text && links.length) text = links[0].label || "转发内容";
   const createdSeconds = Number(attribute(feedData, "abstime") || rawItem?.abstime || rawItem?.created_time || feedId?.[4] || 0);
   const comments = parseComments(html);
   const likes = extractLikePeople(html);
@@ -223,18 +288,29 @@ function parseFeedItem(rawItem, ownerUin) {
     /class=["']f-like-cnt["'][^>]*>\s*(\d+)/i,
   ]) || likes.length;
   const media = extractMedia(html);
-  if (!text && !media.length) return null;
+  if (!text && !media.length && !links.length) return null;
   return {
     sourceId,
     type: "post",
     createdAt: createdSeconds > 0 ? new Date(createdSeconds * 1000).toISOString() : "",
     title: null,
     text,
+    links,
     media,
     comments,
     likes,
     metrics: { commentCount, likeCount },
-    sourceMeta: { adapter: "feeds3_html_more", parserVersion: 3, appid, authorNickname: nickname },
+    sourceMeta: {
+      adapter: "feeds3_html_more",
+      parserVersion: 4,
+      appid,
+      typeId,
+      isForward: typeId === "5" || Boolean(originalSourceId),
+      originalSourceId: originalSourceId || null,
+      originalAuthorUin: originalAuthorUin && originalAuthorUin !== authorUin ? originalAuthorUin : null,
+      authorNickname: nickname,
+      shareTitle: shareTitle || null,
+    },
   };
 }
 
@@ -347,6 +423,7 @@ module.exports = {
   enrichFeeds3Cursor,
   isAuthenticationFailure,
   normalizeMediaUrl,
+  normalizeExternalUrl,
   parseComments,
   parseFeedItem,
   parseFeeds3Page,

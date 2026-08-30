@@ -1,7 +1,7 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 const { parseFeeds3Page } = require("../desktop/collector/qzone-parser.cjs");
-const { buildFeeds3Url } = require("../desktop/collector/qzone-adapter.cjs");
+const { buildFeeds3Url, fetchMoodPageOnce } = require("../desktop/collector/qzone-adapter.cjs");
 
 test("feeds3 parser normalizes a titleless post, media, comments and visible likes", () => {
   const html = `<div id="feed_12345678_311_0_1700000000_0_1">
@@ -58,7 +58,7 @@ test("feeds3 parser removes escaped template whitespace and excludes non-status 
   const page = parseFeeds3Page(payload, "12345678");
   assert.equal(page.entries.length, 1);
   assert.equal(page.entries[0].text, "真正的正文\n第二行");
-  assert.equal(page.entries[0].sourceMeta.parserVersion, 3);
+  assert.equal(page.entries[0].sourceMeta.parserVersion, 4);
   assert.match(page.cursor, /pagenum=2/);
   assert.equal(page.eligibleCount, 1);
 });
@@ -102,4 +102,76 @@ test("image posts keep text before feed_data and prefer originals over thumbnail
   assert.equal(page.entries[0].text, "带图说说正文");
   assert.equal(page.entries[0].media.length, 1);
   assert.match(page.entries[0].media[0].sourceUrl, /photo\.store\.qq\.com/);
+});
+
+test("forwarded posts use the timeline publisher and retain external video links", () => {
+  const html = `<div id="feed_12345678_311_0_1700000000_0_1">
+    <div class="f-info">转发：这个讲得很清楚</div>
+    <i name="feed_data" data-tid="forward-1" data-origtid="original-9" data-uin="12345678" data-origuin="87654321" data-typeid="5" data-abstime="1700000000"></i>
+    <div class="forward-card"><a href="https://www.bilibili.com/video/BV1Test">演示视频</a><span data-card="https://b23.tv/anotherTest">备用视频</span><p>原动态正文</p></div>
+  </div>`;
+  const payload = `_Callback(${JSON.stringify({ code: 0, data: { main: { hasMoreFeeds: false }, data: [{ appid: 311, typeid: 5, opuin: "12345678", nickname: "归档用户", html }] } })});`;
+  const page = parseFeeds3Page(payload, "12345678");
+  assert.equal(page.entries.length, 1);
+  assert.equal(page.entries[0].sourceId, "forward-1");
+  assert.equal(page.entries[0].text, "转发：这个讲得很清楚");
+  assert.equal(page.entries[0].sourceMeta.isForward, true);
+  assert.equal(page.entries[0].sourceMeta.originalAuthorUin, "87654321");
+  assert.deepEqual(page.entries[0].links, [
+    { url: "https://www.bilibili.com/video/BV1Test", label: "演示视频" },
+    { url: "https://b23.tv/anotherTest", label: "b23.tv" },
+  ]);
+  assert.equal(page.eligibleCount, 1);
+});
+
+test("feeds3 uses a conservative default page size", () => {
+  const url = new URL(buildFeeds3Url({ uin: "12345678", gTk: 123 }));
+  assert.equal(url.searchParams.get("count"), "20");
+});
+
+test("a later cursor retries one -10001 response with a fresh request nonce", async () => {
+  const requestedUrls = [];
+  const delays = [];
+  const response = (body) => ({
+    ok: true,
+    status: 200,
+    url: "https://user.qzone.qq.com/",
+    headers: { get: () => "application/json" },
+    text: async () => body,
+  });
+  const page = await fetchMoodPageOnce({
+    uin: "12345678",
+    gTk: 123,
+    cursor: "offset=20&basetime=1699990000&pagenum=2",
+  }, {
+    fetch: async (url) => {
+      requestedUrls.push(url);
+      if (requestedUrls.length === 1) return response('_Callback({"code":-10001,"message":"busy"});');
+      return response('_Callback({"code":0,"data":{"main":{"hasMoreFeeds":false},"data":[]}});');
+    },
+    delay: async (milliseconds) => { delays.push(milliseconds); },
+  });
+  assert.equal(page.rawCount, 0);
+  assert.equal(requestedUrls.length, 2);
+  assert.notEqual(requestedUrls[0], requestedUrls[1]);
+  assert.equal(delays.length, 1);
+  assert.ok(delays[0] >= 2200);
+});
+
+test("a first-page -10001 remains an immediate authentication failure", async () => {
+  let calls = 0;
+  await assert.rejects(() => fetchMoodPageOnce({ uin: "12345678", gTk: 123 }, {
+    fetch: async () => {
+      calls += 1;
+      return {
+        ok: true,
+        status: 200,
+        url: "https://user.qzone.qq.com/",
+        headers: { get: () => "application/json" },
+        text: async () => '_Callback({"code":-10001,"message":"expired"});',
+      };
+    },
+    delay: async () => assert.fail("first-page auth failures must not be delayed"),
+  }), /重新扫码登录/);
+  assert.equal(calls, 1);
 });

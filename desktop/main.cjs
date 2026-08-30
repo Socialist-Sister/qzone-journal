@@ -515,6 +515,15 @@ async function readLatestArchive(accountId) {
         : "时间未知",
       title: entry.title || null,
       text: String(entry.text || ""),
+      links: (Array.isArray(entry.links) ? entry.links : []).flatMap((link) => {
+        try {
+          const url = new URL(String(link?.url || ""));
+          if (url.protocol !== "https:") return [];
+          return [{ url: url.toString(), label: String(link?.label || url.hostname).slice(0, 200) }];
+        } catch {
+          return [];
+        }
+      }),
       location: entry.location || null,
       images,
       mediaCount: images.length,
@@ -759,7 +768,13 @@ async function startCollectorJob(sender, input) {
   child.on("message", (message) => {
     void (async () => {
       const event = publicCollectorEvent(message);
-      if (event.type === "complete") await rememberLatestArchive(archiveRoot, sessionStatus.accountLabel, sessionStatus.accountId);
+      const terminalWithArchive = event.type === "complete"
+        || (["error", "cancelled"].includes(event.type) && Number(event.counts?.entries || 0) > 0);
+      if (terminalWithArchive) {
+        // Use the main-process-selected path; never trust a path sent by the worker.
+        event.archivePath = archiveRoot;
+        await rememberLatestArchive(archiveRoot, sessionStatus.accountLabel, sessionStatus.accountId);
+      }
       if (["complete", "error", "cancelled"].includes(event.type)) await finish();
       if (!sender.isDestroyed()) sender.send("desktop:qzone:collector-event", event);
     })().catch(() => {

@@ -22,6 +22,7 @@ import {
   Images,
   Info,
   Key,
+  LinkSimple,
   LockKey,
   MagnifyingGlass,
   MapPin,
@@ -381,7 +382,8 @@ function ArchiveView({ archive, onStart, onImportDemo }) {
     const keyword = query.trim().toLowerCase();
     return entries.filter((entry) => {
       const matchesType = filter === "all" || entry.type === filter;
-      const matchesQuery = !keyword || `${entry.title ?? ""} ${entry.text} ${entry.location ?? ""}`.toLowerCase().includes(keyword);
+      const linkText = (entry.links || []).map((link) => link.label).join(" ");
+      const matchesQuery = !keyword || `${entry.title ?? ""} ${entry.text} ${entry.location ?? ""} ${linkText}`.toLowerCase().includes(keyword);
       return matchesType && matchesQuery;
     });
   }, [entries, filter, query]);
@@ -498,6 +500,15 @@ function ArchiveView({ archive, onStart, onImportDemo }) {
                 {selectedEntry.title && <h2>{selectedEntry.title}</h2>}
               </div>
               <p className={`detail-body ${selectedEntry.title ? "" : "titleless"}`}>{selectedEntry.text}</p>
+              {selectedEntry.links?.length > 0 && (
+                <div className="detail-links" aria-label="动态中的外部链接">
+                  {selectedEntry.links.map((link) => (
+                    <a key={link.url} href={link.url} target="_blank" rel="noreferrer">
+                      <LinkSimple size={15} /><span>{link.label}</span><small>{new URL(link.url).hostname}</small>
+                    </a>
+                  ))}
+                </div>
+              )}
               <MediaGrid images={selectedEntry.images} onOpen={(imageIndex) => setViewer({ images: selectedEntry.images, index: imageIndex })} />
               {selectedEntry.location && <p className="detail-location"><MapPin size={16} />{selectedEntry.location}</p>}
               <div className="detail-section">
@@ -1360,7 +1371,10 @@ function BackupDialog({ onClose, onComplete, onAccountChange }) {
         setCancelling(false);
         if (event.phase === "authentication_required") {
           setForceReauthenticate(true);
-          setFlowError(`QQ 会话需要刷新，已经保存 ${event.counts?.entries || 0} 条内容和恢复点。重新扫码后可以继续。`);
+          const saved = event.counts?.entries || 0;
+          setFlowError(saved > 0
+            ? `QQ 拒绝了后续请求或会话需要刷新。本地档案现有 ${saved} 条内容，已登记到“我的档案”；重新扫码后可以从恢复点继续。`
+            : "QQ 会话需要刷新，目前还没有取得可归档内容；请重新扫码后再试。");
           setStep("connect");
         } else {
           setFlowError(event.message || "采集进程未能完成，请稍后重试");
@@ -1604,6 +1618,10 @@ export function App() {
     if (!window.desktop?.qzone?.listAccounts) return accountState;
     const next = await window.desktop.qzone.listAccounts();
     setAccountState(next);
+    if (window.desktop?.qzone?.readArchive) {
+      const archive = await window.desktop.qzone.readArchive();
+      setArchiveData(archive || null);
+    }
     return next;
   };
 

@@ -2,7 +2,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { createHash, randomUUID } = require("node:crypto");
 const { ARCHIVE_SCHEMA_VERSION, createManifest, isoNow, normalizeArchiveEntry } = require("./schema.cjs");
-const COLLECTOR_PARSER_VERSION = 3;
+const COLLECTOR_PARSER_VERSION = 4;
 const PARSER_MIGRATION_STATE = "parser-migration-transaction.json";
 
 async function listJsonNames(directory) {

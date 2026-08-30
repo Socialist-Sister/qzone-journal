@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.3.2-alpha] - 2026-08-30
+
+### 修复
+
+- 修复转发说说中 `feed_data.uin` 指向原作者时，本人发布的转发被误判为他人动态并过滤的问题。
+- 保留转发卡片中的安全 HTTPS 外链，并在档案详情中显示可打开的视频或网页链接。
+- 大账号采集改为每页 20 条并放慢连续翻页；中途游标遇到 `-10001` 时仅延迟重试一次，降低 QQ 风控误判为登录失效的概率。
+- 采集失败或取消前已经写入的内容会登记到当前账号，并立即出现在“我的档案”，不再出现“保存了若干条但界面看不到”的情况。
+
+### 数据兼容
+
+- 解析器升级到版本 4；旧记录在重新采集成功前仍按事务式迁移规则保留，可失败回滚。
+- 新增转发发布者、外链、保守分页和有限重试的回归测试。
+
 ## [0.3.1-alpha] - 2026-08-30
 
 ### 修复
@@ -80,6 +94,7 @@
 - QQ 非公开接口可能随服务端变化。
 - 安装包尚未进行代码签名。
 
+[0.3.2-alpha]: https://github.com/Socialist-Sister/qzone-journal/releases/tag/v0.3.2-alpha
 [0.3.1-alpha]: https://github.com/Socialist-Sister/qzone-journal/releases/tag/v0.3.1-alpha
 [0.3.0-alpha]: https://github.com/Socialist-Sister/qzone-journal/releases/tag/v0.3.0-alpha
 [0.2.1-alpha]: https://github.com/Socialist-Sister/qzone-journal/releases/tag/v0.2.1-alpha
