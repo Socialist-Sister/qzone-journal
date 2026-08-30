@@ -71,7 +71,7 @@ async function run() {
   const userDataPath = process.env.QZONE_JOURNAL_USER_DATA || path.join(process.env.APPDATA || "", "qzone-journal");
   app.setPath("userData", userDataPath);
   await app.whenReady();
-  const qzoneSession = session.fromPartition("persist:qzone-journal-account", { cache: true });
+  const qzoneSession = session.fromPartition("qzone-journal-account", { cache: true });
   const cookies = await qzoneSession.cookies.get({});
   const byName = new Map(cookies.map((cookie) => [cookie.name, cookie.value]));
   const uin = String(byName.get("p_uin") || byName.get("uin") || byName.get("media_p_uin") || byName.get("ptui_loginuin") || "").replace(/\D/g, "");

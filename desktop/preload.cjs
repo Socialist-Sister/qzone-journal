@@ -24,12 +24,14 @@ contextBridge.exposeInMainWorld("desktop", Object.freeze({
   }),
   app: Object.freeze({
     getInfo: () => invoke("desktop:app:info"),
+    exportDiagnostics: () => invoke("desktop:app:export-diagnostics"),
   }),
   qzone: Object.freeze({
     getSessionStatus: () => invoke("desktop:qzone:get-session-status"),
     listAccounts: () => invoke("desktop:qzone:list-accounts"),
     switchAccount: (accountId) => invoke("desktop:qzone:switch-account", String(accountId || "")),
     addAccount: () => invoke("desktop:qzone:add-account"),
+    deleteAccount: (accountId) => invoke("desktop:qzone:delete-account", String(accountId || "")),
     openLogin: (options = {}) => invoke("desktop:qzone:open-login", { force: options?.force === true }),
     startCollection: (options) => invoke("desktop:qzone:start-collection", options),
     readArchive: () => invoke("desktop:qzone:read-archive"),

@@ -14,6 +14,7 @@ import {
   ClockCounterClockwise,
   Code,
   FolderOpen,
+  FileArrowDown,
   GearSix,
   HardDrive,
   Heart,
@@ -70,11 +71,13 @@ function LoadingSpinner({ size = 17 }) {
   return <span className="loading-spinner" style={{ width: size, height: size }} aria-hidden="true"><SpinnerGap size={size} /></span>;
 }
 
-function TitleBar({ activeView, onNavigate, onWindowAction, isMaximized, accountState, accountBusy, onSwitchAccount, onAddAccount }) {
+function TitleBar({ activeView, onNavigate, onWindowAction, isMaximized, accountState, accountBusy, onSwitchAccount, onAddAccount, onDeleteAccount }) {
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
+  const [deleteCandidateId, setDeleteCandidateId] = useState("");
   const accountMenuRef = useRef(null);
   const activeAccount = accountState.accounts.find((account) => account.id === accountState.activeAccountId)
     || accountState.accounts[0];
+  const deleteCandidate = accountState.accounts.find((account) => account.id === deleteCandidateId);
 
   useEffect(() => {
     if (!accountMenuOpen) return undefined;
@@ -90,6 +93,10 @@ function TitleBar({ activeView, onNavigate, onWindowAction, isMaximized, account
       document.removeEventListener("pointerdown", closeOutside);
       window.removeEventListener("keydown", closeWithEscape);
     };
+  }, [accountMenuOpen]);
+
+  useEffect(() => {
+    if (!accountMenuOpen) setDeleteCandidateId("");
   }, [accountMenuOpen]);
 
   return (
@@ -136,38 +143,59 @@ function TitleBar({ activeView, onNavigate, onWindowAction, isMaximized, account
           >
             <span className="account-trigger-icon"><UserCircle size={18} weight="fill" /></span>
             <span className="account-trigger-label">{activeAccount?.accountLabel || "QQ 账号"}</span>
-            <span className={`account-status-dot ${activeAccount?.authenticated ? "online" : ""}`} aria-hidden="true" />
+            <span className={`account-status-dot ${activeAccount?.hasArchive ? "archived" : ""}`} aria-hidden="true" />
             <CaretDown className="account-caret" size={14} />
           </button>
           {accountMenuOpen && (
             <div className="account-menu" role="menu" aria-label="QQ 账号">
               <div className="account-menu-heading">
-                <strong>QQ 账号</strong>
-                <span>会话彼此独立保存在本机</span>
+                <strong>QQ 档案</strong>
+                <span>切换本地档案；备份结束后自动退出 QQ</span>
               </div>
               <div className="account-menu-list">
                 {accountState.accounts.map((account) => (
-                  <button
-                    className={`account-menu-item ${account.active ? "active" : ""}`}
-                    type="button"
-                    role="menuitemradio"
-                    aria-checked={account.active}
-                    disabled={accountBusy}
-                    key={account.id}
-                    onClick={async () => {
-                      await onSwitchAccount(account.id);
-                      setAccountMenuOpen(false);
-                    }}
-                  >
-                    <span className="account-avatar"><UserCircle size={20} weight="fill" /></span>
-                    <span className="account-menu-copy">
-                      <strong>{account.accountLabel}</strong>
-                      <small>{account.authenticated ? "会话可用" : "需要重新扫码"}</small>
-                    </span>
-                    {account.active && <Check size={16} weight="bold" />}
-                  </button>
+                  <div className={`account-menu-row ${account.active ? "active" : ""}`} key={account.id}>
+                    <button
+                      className="account-menu-item"
+                      type="button"
+                      role="menuitemradio"
+                      aria-checked={account.active}
+                      disabled={accountBusy}
+                      onClick={async () => {
+                        await onSwitchAccount(account.id);
+                        setAccountMenuOpen(false);
+                      }}
+                    >
+                      <span className="account-avatar"><UserCircle size={20} weight="fill" /></span>
+                      <span className="account-menu-copy">
+                        <strong>{account.accountLabel}</strong>
+                        <small>{account.hasArchive ? "本地档案可用" : "尚无本地档案"}</small>
+                      </span>
+                      {account.active && <Check size={16} weight="bold" />}
+                    </button>
+                    <button className="account-delete" type="button" aria-label={`删除 ${account.accountLabel} 的全部数据`} title="删除账号数据" disabled={accountBusy} onClick={() => setDeleteCandidateId(account.id)}>
+                      <Trash size={16} />
+                    </button>
+                  </div>
                 ))}
               </div>
+              {deleteCandidate && (
+                <div className="account-delete-confirm" role="alertdialog" aria-label="确认删除账号全部数据">
+                  <strong>删除 {deleteCandidate.accountLabel} 的全部数据？</strong>
+                  <span>账号入口和临时会话会被清除，本地档案将移入系统回收站。</span>
+                  <code>{deleteCandidate.archivePath || "当前账号尚无本地档案"}</code>
+                  <div>
+                    <button type="button" disabled={accountBusy} onClick={() => setDeleteCandidateId("")}>取消</button>
+                    <button className="confirm-delete" type="button" disabled={accountBusy} onClick={async () => {
+                      const deleted = await onDeleteAccount(deleteCandidate.id);
+                      if (deleted) {
+                        setDeleteCandidateId("");
+                        setAccountMenuOpen(false);
+                      }
+                    }}>{accountBusy ? <LoadingSpinner size={14} /> : <Trash size={14} />}删除全部数据</button>
+                  </div>
+                </div>
+              )}
               <button
                 className="account-add"
                 type="button"
@@ -179,7 +207,7 @@ function TitleBar({ activeView, onNavigate, onWindowAction, isMaximized, account
                 }}
               >
                 {accountBusy ? <LoadingSpinner size={16} /> : <Plus size={16} weight="bold" />}
-                <span>{accountBusy ? "正在连接…" : "添加另一个 QQ"}</span>
+                <span>{accountBusy ? "正在连接…" : "添加另一个 QQ 档案"}</span>
               </button>
             </div>
           )}
@@ -813,6 +841,7 @@ function SettingsView({ section, onSectionChange, aiConfig, onAiConfigChange, ar
   const [modelTestResults, setModelTestResults] = useState([]);
   const [detectingModels, setDetectingModels] = useState(false);
   const [deleteConfirmId, setDeleteConfirmId] = useState("");
+  const [exportingDiagnostics, setExportingDiagnostics] = useState(false);
 
   useEffect(() => {
     if (!window.desktop?.app?.getInfo) return;
@@ -861,6 +890,23 @@ function SettingsView({ section, onSectionChange, aiConfig, onAiConfigChange, ar
       await window.desktop.dialogs.openBackupDirectory();
     } catch (error) {
       showNotice(readableError(error));
+    }
+  };
+
+  const exportDiagnostics = async () => {
+    if (exportingDiagnostics) return;
+    if (!window.desktop?.app?.exportDiagnostics) {
+      showNotice("脱敏诊断导出仅在桌面版中可用");
+      return;
+    }
+    setExportingDiagnostics(true);
+    try {
+      const result = await window.desktop.app.exportDiagnostics();
+      if (result?.exported) showNotice(`已导出 ${result.fileName}`);
+    } catch (error) {
+      showNotice(readableError(error));
+    } finally {
+      setExportingDiagnostics(false);
     }
   };
 
@@ -1151,6 +1197,12 @@ function SettingsView({ section, onSectionChange, aiConfig, onAiConfigChange, ar
                   <ShieldCheck size={23} weight="fill" />
                   <div><strong>导出前再次确认</strong><span>后续接入导出时，将在包含互动人员信息前再次确认范围。</span></div>
                 </div>
+                <div className="settings-row settings-directory-row">
+                  <div><strong>脱敏诊断包</strong><span>导出应用、采集和档案状态，不包含 Cookie、完整 QQ 号、API Key、动态正文、人员信息、原始响应或本地绝对路径。</span></div>
+                  <button className="archive-maintenance-action" type="button" disabled={exportingDiagnostics} onClick={exportDiagnostics}>
+                    {exportingDiagnostics ? <><LoadingSpinner size={15} />正在导出…</> : <><FileArrowDown size={15} />导出诊断</>}
+                  </button>
+                </div>
               </div>
             </article>
           )}
@@ -1292,6 +1344,7 @@ function BackupDialog({ onClose, onComplete, onAccountChange }) {
         setProgress(100);
         setCollectionResult(event);
         setStep("success");
+        void onAccountChange?.();
         return;
       }
       if (event.type === "cancelled") {
@@ -1299,6 +1352,7 @@ function BackupDialog({ onClose, onComplete, onAccountChange }) {
         setCancelling(false);
         setFlowError(event.message || "采集任务已取消，恢复点已经保留");
         setStep("choose");
+        void onAccountChange?.();
         return;
       }
       if (event.type === "error") {
@@ -1312,6 +1366,7 @@ function BackupDialog({ onClose, onComplete, onAccountChange }) {
           setFlowError(event.message || "采集进程未能完成，请稍后重试");
           setStep("choose");
         }
+        void onAccountChange?.();
       }
     });
   }, []);
@@ -1434,7 +1489,7 @@ function BackupDialog({ onClose, onComplete, onAccountChange }) {
             <h2 id="dialog-title">准备连接你的 QQ 空间</h2>
             <p className="dialog-copy">
               {nativeCollectorAvailable
-                ? "应用将打开 QQ 官方登录页面。登录会话只保存在本机的独立会话分区中，应用不会读取你的密码。"
+                ? "应用将打开 QQ 官方登录页面。会话只在本次连接与备份期间临时使用，任务结束后自动清除；应用不会读取你的密码。"
                 : "浏览器预览不会连接真实账号；请在桌面版中使用 QQ 官方登录页面。"}
             </p>
             <div className="trust-row"><Info size={18} weight="fill" /><span>{nativeCollectorAvailable ? "Cookie 不会发送到界面，也不会写入本地归档。" : "当前流程仅用于界面演示，不会读取真实账号。"}</span></div>
@@ -1495,7 +1550,7 @@ function BackupDialog({ onClose, onComplete, onAccountChange }) {
             <p className="dialog-kicker">{collectionResult ? "本地备份完成" : "第一次备份完成"}</p>
             <h2 id="dialog-title">{collectionResult ? `${collectionResult.counts?.entries || 0} 条内容已归档` : `${demoTotal} 条记忆已安全回家`}</h2>
             {collectionResult
-              ? <><p>本次新增 {collectionResult.changes?.added || 0} 条、更新 {collectionResult.changes?.updated || 0} 条、跳过 {collectionResult.changes?.skipped || 0} 条未变化内容；共保存 {collectionResult.counts?.media || 0} 张图片（{formatFileSize(collectionResult.counts?.mediaBytes)}）、{collectionResult.counts?.comments || 0} 条评论和 {collectionResult.counts?.likes || 0} 条可见点赞记录。</p><code className="archive-path">{collectionResult.archivePath}</code>{flowError && <p className="dialog-error" role="alert"><WarningCircle size={17} weight="fill" />{flowError}</p>}</>
+              ? <><p>本次新增 {collectionResult.changes?.added || 0} 条、更新 {collectionResult.changes?.updated || 0} 条、跳过 {collectionResult.changes?.skipped || 0} 条未变化内容；共保存 {collectionResult.counts?.media || 0} 张图片（{formatFileSize(collectionResult.counts?.mediaBytes)}）、{collectionResult.counts?.comments || 0} 条评论和 {collectionResult.counts?.likes || 0} 条可见点赞记录。QQ 临时会话已自动清除。</p><code className="archive-path">{collectionResult.archivePath}</code>{flowError && <p className="dialog-error" role="alert"><WarningCircle size={17} weight="fill" />{flowError}</p>}</>
               : <p>当前是演示数据。正式采集接入后，档案会保存在你选择的本地目录。</p>}
             <button className="dialog-primary" type="button" disabled={openingArchive} onClick={collectionResult ? openCollectedArchive : onComplete}>{openingArchive ? <><LoadingSpinner />正在读取档案…</> : <>{collectionResult ? "打开我的档案" : "查看我的档案"}<ArrowRight size={20} /></>}</button>
           </div>
@@ -1652,6 +1707,30 @@ export function App() {
     }
   };
 
+  const handleDeleteAccount = async (accountId) => {
+    if (accountBusy || !window.desktop?.qzone?.deleteAccount) {
+      if (!window.desktop?.qzone?.deleteAccount) {
+        setWindowNotice("账号数据删除仅在桌面版中可用");
+        window.setTimeout(() => setWindowNotice(""), 2800);
+      }
+      return false;
+    }
+    setAccountBusy(true);
+    try {
+      const next = await window.desktop.qzone.deleteAccount(accountId);
+      setAccountState({ activeAccountId: next.activeAccountId, accounts: next.accounts });
+      await loadActiveArchive();
+      setWindowNotice(next.movedToTrash ? `${next.deletedAccountLabel} 的本地档案已移入回收站` : `${next.deletedAccountLabel} 的账号数据已删除`);
+      return true;
+    } catch (error) {
+      setWindowNotice(readableError(error));
+      return false;
+    } finally {
+      setAccountBusy(false);
+      window.setTimeout(() => setWindowNotice(""), 3500);
+    }
+  };
+
   const start = (method = "app") => setDialogMethod(method);
   const complete = (collectedArchive) => {
     const nextArchive = collectedArchive?.entries
@@ -1702,6 +1781,7 @@ export function App() {
         accountBusy={accountBusy}
         onSwitchAccount={handleSwitchAccount}
         onAddAccount={handleAddAccount}
+        onDeleteAccount={handleDeleteAccount}
       />
       <main className="app-main">
         <div className="looseleaf-rail" aria-hidden="true">

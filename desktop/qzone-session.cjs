@@ -3,8 +3,10 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { randomUUID } = require("node:crypto");
 
-const QZONE_PARTITION = "persist:qzone-journal-account";
-const QZONE_ACCOUNT_PARTITION_PREFIX = "persist:qzone-journal-account-";
+const QZONE_PARTITION = "qzone-journal-account";
+const QZONE_ACCOUNT_PARTITION_PREFIX = "qzone-journal-account-";
+const LEGACY_PERSISTENT_PARTITION = "persist:qzone-journal-account";
+const LEGACY_PERSISTENT_PARTITION_PREFIX = "persist:qzone-journal-account-";
 const QZONE_HOME_URL = "https://qzone.qq.com/";
 const FEEDS3_AUTH_URL = "https://user.qzone.qq.com/proxy/domain/ic2.qzone.qq.com/cgi-bin/feeds/feeds3_html_more";
 const AUTH_FAILURE_CODES = new Set([-3, -100, -3000, -10001, -10006]);
@@ -73,20 +75,24 @@ function accountsPath() {
 
 function legacyAccount() {
   const now = new Date().toISOString();
-  return { id: LEGACY_ACCOUNT_ID, partition: QZONE_PARTITION, accountLabel: "当前账号", createdAt: now, lastUsedAt: now };
+  return { id: LEGACY_ACCOUNT_ID, partition: QZONE_PARTITION, accountLabel: "QQ 账号", createdAt: now, lastUsedAt: now };
+}
+
+function runtimePartition(accountId) {
+  return accountId === LEGACY_ACCOUNT_ID ? QZONE_PARTITION : `${QZONE_ACCOUNT_PARTITION_PREFIX}${accountId}`;
 }
 
 function normalizeRegistry(value) {
   const input = value && typeof value === "object" ? value : {};
   const accounts = (Array.isArray(input.accounts) ? input.accounts : []).flatMap((account) => {
     const id = String(account?.id || "");
-    const partition = String(account?.partition || "");
     if (!/^(?:legacy|[0-9a-f-]{36})$/i.test(id)) return [];
-    if (partition !== QZONE_PARTITION && !partition.startsWith(QZONE_ACCOUNT_PARTITION_PREFIX)) return [];
     return [{
       id,
-      partition,
-      accountLabel: String(account?.accountLabel || "当前账号").slice(0, 40),
+      partition: runtimePartition(id),
+      accountLabel: (id === LEGACY_ACCOUNT_ID && ["", "当前账号", "QQ账号"].includes(String(account?.accountLabel || "")))
+        ? "QQ 账号"
+        : String(account?.accountLabel || "QQ 账号").slice(0, 40),
       createdAt: String(account?.createdAt || new Date().toISOString()),
       lastUsedAt: String(account?.lastUsedAt || new Date().toISOString()),
     }];
@@ -95,18 +101,34 @@ function normalizeRegistry(value) {
   const activeAccountId = accounts.some((account) => account.id === input.activeAccountId)
     ? String(input.activeAccountId)
     : accounts[0].id;
-  return { version: 1, activeAccountId, accounts };
+  return { version: 2, activeAccountId, accounts };
 }
 
 async function ensureAccountRegistry() {
   if (accountRegistry) return accountRegistry;
+  let stored = null;
   try {
-    accountRegistry = normalizeRegistry(JSON.parse(await fs.readFile(accountsPath(), "utf8")));
+    stored = JSON.parse(await fs.readFile(accountsPath(), "utf8"));
   } catch (error) {
     if (error?.code !== "ENOENT" && !(error instanceof SyntaxError)) throw error;
-    accountRegistry = normalizeRegistry(null);
-    await saveAccountRegistry();
   }
+  const persistentPartitions = new Set();
+  if (Number(stored?.version) < 2) {
+    persistentPartitions.add(LEGACY_PERSISTENT_PARTITION);
+    for (const account of Array.isArray(stored?.accounts) ? stored.accounts : []) {
+      const partition = String(account?.partition || "");
+      if (partition === LEGACY_PERSISTENT_PARTITION || partition.startsWith(LEGACY_PERSISTENT_PARTITION_PREFIX)) {
+        persistentPartitions.add(partition);
+      }
+    }
+  }
+  accountRegistry = normalizeRegistry(stored);
+  await Promise.all([...persistentPartitions].map(async (partition) => {
+    const legacySession = session.fromPartition(partition, { cache: false });
+    await legacySession.clearStorageData().catch(() => undefined);
+    await legacySession.clearCache().catch(() => undefined);
+  }));
+  if (!stored || Number(stored.version) < 2 || persistentPartitions.size) await saveAccountRegistry();
   return accountRegistry;
 }
 
@@ -226,18 +248,22 @@ async function getQzoneRequestContext() {
 async function clearQzoneCookies(accountId, suppliedAccount) {
   const account = suppliedAccount || await resolveAccount(accountId);
   const qzoneSession = session.fromPartition(account.partition, { cache: true });
-  const cookies = await qzoneSession.cookies.get({});
-  const qqCookies = cookies.filter((cookie) => {
-    const domain = String(cookie?.domain || "").replace(/^\./, "").toLowerCase();
-    return domain === "qq.com" || domain.endsWith(".qq.com");
-  });
-  await Promise.all(qqCookies.map((cookie) => {
-    const domain = String(cookie.domain || "qq.com").replace(/^\./, "");
-    const scheme = cookie.secure ? "https" : "http";
-    const cookiePath = String(cookie.path || "/").startsWith("/") ? String(cookie.path || "/") : `/${cookie.path}`;
-    return qzoneSession.cookies.remove(`${scheme}://${domain}${cookiePath}`, cookie.name);
-  }));
+  await qzoneSession.clearStorageData();
   await qzoneSession.clearCache().catch(() => undefined);
+}
+
+async function deleteQzoneAccount(accountId) {
+  const registry = await ensureAccountRegistry();
+  const account = await resolveAccount(accountId);
+  await clearQzoneCookies(account.id, account);
+  registry.accounts = registry.accounts.filter((item) => item.id !== account.id);
+  if (!registry.accounts.length) registry.accounts.push(legacyAccount());
+  if (!registry.accounts.some((item) => item.id === registry.activeAccountId)) {
+    registry.activeAccountId = [...registry.accounts]
+      .sort((left, right) => String(right.lastUsedAt).localeCompare(String(left.lastUsedAt)))[0].id;
+  }
+  await saveAccountRegistry();
+  return listQzoneAccounts();
 }
 
 function configureQzoneSession(qzoneSession) {
@@ -247,16 +273,17 @@ function configureQzoneSession(qzoneSession) {
 
 async function listQzoneAccounts() {
   const registry = await ensureAccountRegistry();
-  const accounts = await Promise.all(registry.accounts.map(async (account) => {
+  const accounts = (await Promise.all(registry.accounts.map(async (account) => {
     const status = await inspectQzoneSession({ account });
     if (status.accountLabel && status.accountLabel !== account.accountLabel) account.accountLabel = status.accountLabel;
+    if (!status.uin && account.accountLabel === "QQ 账号") return null;
     return {
       id: account.id,
       accountLabel: status.accountLabel || account.accountLabel || "当前账号",
       authenticated: Boolean(status.authenticated),
       active: account.id === registry.activeAccountId,
     };
-  }));
+  }))).filter(Boolean);
   await saveAccountRegistry();
   return { activeAccountId: registry.activeAccountId, accounts };
 }
@@ -291,8 +318,9 @@ async function openQzoneLogin(parentWindow, { force = false, addAccount = false 
     return loginPromise;
   }
 
+  const newAccountId = addAccount ? randomUUID() : "";
   const account = addAccount
-    ? { id: randomUUID(), partition: `${QZONE_ACCOUNT_PARTITION_PREFIX}${randomUUID()}`, accountLabel: "新账号", createdAt: new Date().toISOString(), lastUsedAt: new Date().toISOString() }
+    ? { id: newAccountId, partition: runtimePartition(newAccountId), accountLabel: "新账号", createdAt: new Date().toISOString(), lastUsedAt: new Date().toISOString() }
     : await resolveAccount();
   if (force) await clearQzoneCookies(account.id, account);
   if (!addAccount) {
@@ -408,6 +436,7 @@ module.exports = {
   analyzeQzoneCookies,
   calculateGtk,
   clearQzoneCookies,
+  deleteQzoneAccount,
   getActiveQzoneAccountId,
   getQzoneSession,
   getQzoneRequestContext,

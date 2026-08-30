@@ -25,6 +25,7 @@ jobs:
       - run: pnpm run build
       - run: pnpm run test:archive
       - run: pnpm run test:collector
+      - run: pnpm run test:session
       - run: pnpm run test:desktop
       - run: pnpm run test:ai-compat
       - run: pnpm run test:sites

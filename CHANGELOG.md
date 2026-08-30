@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.3.0-alpha] - 2026-08-30
+
+### 账号与隐私
+
+- QQ 登录改为仅供单次采集使用的临时隔离会话；采集完成、失败或取消后自动清除，并在升级时清理旧版持久会话。
+- 顶部账号入口现在用于切换各 QQ 的本地档案；每个账号右侧提供删除全部数据入口。
+- 删除前进行二次确认并展示目标路径；应用只会删除已授权目录内、具有有效归档标识且未被其他账号共用的档案，删除时移入系统回收站。
+- 删除 AI 模型服务时同步删除其加密 API Key，不再提供含义宽泛的“清除敏感数据”。
+- 新增字段白名单式脱敏诊断包导出，排除 Cookie、完整 QQ 号、API Key、绝对路径、档案正文和原始 QQ 响应。
+
+### 界面与操作
+
+- 账号菜单区分“已保存档案”与待备份状态，并在删除确认中明确说明影响范围和可恢复方式。
+- 备份完成页明确提示临时 QQ 会话已经自动清除。
+
 ## [0.2.1-alpha] - 2026-08-30
 
 ### 界面调整
@@ -56,6 +71,7 @@
 - QQ 非公开接口可能随服务端变化。
 - 安装包尚未进行代码签名。
 
+[0.3.0-alpha]: https://github.com/Socialist-Sister/qzone-journal/releases/tag/v0.3.0-alpha
 [0.2.1-alpha]: https://github.com/Socialist-Sister/qzone-journal/releases/tag/v0.2.1-alpha
 [0.2.0-alpha]: https://github.com/Socialist-Sister/qzone-journal/releases/tag/v0.2.0-alpha
 [0.1.1-alpha]: https://github.com/Socialist-Sister/qzone-journal/releases/tag/v0.1.1-alpha

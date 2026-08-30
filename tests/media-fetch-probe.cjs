@@ -51,14 +51,14 @@ async function run() {
   const url = String(diagnostic.items?.[0]?.sourceUrl || "");
   if (!url) throw new Error("没有可探测的媒体地址");
   const headers = { accept: "image/*,*/*;q=0.8", referer: "https://user.qzone.qq.com/" };
-  const qzoneSession = session.fromPartition("persist:qzone-journal-account", { cache: true });
+  const qzoneSession = session.fromPartition("qzone-journal-account", { cache: true });
   const results = [];
   results.push(await probe("net-anonymous", net.fetch, url, { headers }));
   results.push(await probe("net-credentials", net.fetch, url, { credentials: "include", headers }));
   results.push(await probe("session-anonymous", qzoneSession.fetch.bind(qzoneSession), url, { headers }));
   results.push(await probe("session-credentials", qzoneSession.fetch.bind(qzoneSession), url, { credentials: "include", headers }));
   results.push(await probeWorker("utility-session", { session: qzoneSession }, url));
-  results.push(await probeWorker("utility-partition", { partition: "persist:qzone-journal-account" }, url));
+  results.push(await probeWorker("utility-partition", { partition: "qzone-journal-account" }, url));
   qzoneSession.setPermissionCheckHandler(() => false);
   qzoneSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
   results.push(await probeWorker("utility-session-permissions-denied", { session: qzoneSession }, url));

@@ -7,6 +7,8 @@ const { sanitizeCollectionOptions } = require("./archive/schema.cjs");
 const { ArchiveStore } = require("./archive/store.cjs");
 const {
   addQzoneAccount,
+  clearQzoneCookies,
+  deleteQzoneAccount,
   getActiveQzoneAccountId,
   getQzoneRequestContext,
   getQzoneSession,
@@ -420,6 +422,14 @@ async function readArchiveIndex() {
   }
 }
 
+async function writeArchiveIndex(index) {
+  const target = archiveIndexPath();
+  const temporary = `${target}.${randomUUID()}.tmp`;
+  await fs.mkdir(path.dirname(target), { recursive: true });
+  await fs.writeFile(temporary, `${JSON.stringify(index, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+  await fs.rename(temporary, target);
+}
+
 async function rememberLatestArchive(archiveRoot, accountLabel, accountId) {
   const index = await readArchiveIndex();
   index.byAccount[String(accountId || "legacy")] = {
@@ -427,13 +437,7 @@ async function rememberLatestArchive(archiveRoot, accountLabel, accountId) {
     accountLabel,
     updatedAt: new Date().toISOString(),
   };
-  const target = archiveIndexPath();
-  const temporary = `${target}.${randomUUID()}.tmp`;
-  await fs.writeFile(temporary, `${JSON.stringify(index, null, 2)}\n`, {
-    encoding: "utf8",
-    mode: 0o600,
-  });
-  await fs.rename(temporary, target);
+  await writeArchiveIndex(index);
 }
 
 async function assertArchiveRoot(archiveRoot) {
@@ -444,6 +448,24 @@ async function assertArchiveRoot(archiveRoot) {
     return resolved === allowedRoot || resolved.startsWith(`${allowedRoot}${path.sep}`);
   });
   if (!allowed) throw new Error("归档路径不在已授权的本地目录中");
+  return resolved;
+}
+
+async function assertDeletableArchiveRoot(archiveRoot) {
+  const resolved = await assertArchiveRoot(archiveRoot);
+  const { knownBackupDirectories } = await readAppPreferences();
+  if (knownBackupDirectories.some((directory) => path.resolve(directory) === resolved)) {
+    throw new Error("安全检查未通过：不能删除备份根目录");
+  }
+  let manifest;
+  try {
+    manifest = JSON.parse(await fs.readFile(path.join(resolved, "manifest.json"), "utf8"));
+  } catch {
+    throw new Error("安全检查未通过：目标不是可识别的空间备份档案");
+  }
+  if (manifest?.source?.platform !== "qzone" || !manifest?.archiveId) {
+    throw new Error("安全检查未通过：目标缺少有效的 QQ 空间归档标识");
+  }
   return resolved;
 }
 
@@ -525,6 +547,168 @@ async function repairLatestArchive(accountId) {
   return new ArchiveStore(archiveRoot).repairIntegrity();
 }
 
+async function listAccountsWithArchives() {
+  const state = await listQzoneAccounts();
+  const index = await readArchiveIndex();
+  return {
+    activeAccountId: state.activeAccountId,
+    accounts: state.accounts.map((account) => {
+      const archive = index.byAccount[account.id];
+      return {
+        ...account,
+        hasArchive: Boolean(archive?.archiveRoot),
+        archivePath: archive?.archiveRoot ? String(archive.archiveRoot) : "",
+      };
+    }),
+  };
+}
+
+async function deleteAccountData(accountId) {
+  const id = String(accountId || "");
+  const state = await listQzoneAccounts();
+  const account = state.accounts.find((item) => item.id === id);
+  if (!account) throw new Error("没有找到要删除的账号");
+  const index = await readArchiveIndex();
+  const archive = index.byAccount[id];
+  let movedToTrash = false;
+  if (archive?.archiveRoot) {
+    const archiveRoot = await assertArchiveRoot(archive.archiveRoot);
+    let archiveExists = true;
+    try {
+      await fs.access(archiveRoot);
+    } catch (error) {
+      if (error?.code === "ENOENT") archiveExists = false;
+      else throw new Error(`无法读取本地档案：${error?.message || error}`);
+    }
+    if (archiveExists) {
+      const deletableRoot = await assertDeletableArchiveRoot(archiveRoot);
+      const sharedReference = Object.entries(index.byAccount)
+        .some(([otherId, item]) => otherId !== id && path.resolve(String(item?.archiveRoot || "")) === deletableRoot);
+      if (sharedReference) throw new Error("这个档案同时关联了其他账号，已停止删除");
+      try {
+        await shell.trashItem(deletableRoot);
+        movedToTrash = true;
+      } catch (error) {
+        throw new Error(`无法将本地档案移入回收站：${error?.message || error}`);
+      }
+    }
+    delete index.byAccount[id];
+    await writeArchiveIndex(index);
+  }
+  await deleteQzoneAccount(id);
+  return {
+    ...(await listAccountsWithArchives()),
+    deletedAccountLabel: account.accountLabel,
+    movedToTrash,
+  };
+}
+
+function diagnosticCounts(value) {
+  const input = value && typeof value === "object" ? value : {};
+  return {
+    entries: Math.max(0, Number(input.entries) || 0),
+    media: Math.max(0, Number(input.media) || 0),
+    mediaBytes: Math.max(0, Number(input.mediaBytes) || 0),
+    comments: Math.max(0, Number(input.comments) || 0),
+    likes: Math.max(0, Number(input.likes) || 0),
+  };
+}
+
+async function buildDiagnosticBundle() {
+  const preferences = await readAppPreferences();
+  const aiConfig = normalizeStoredConfig(await readAiConfig());
+  const accountState = await listQzoneAccounts();
+  const index = await readArchiveIndex();
+  const archives = [];
+  for (const [accountId, item] of Object.entries(index.byAccount)) {
+    const summary = {
+      archiveKey: createHash("sha256").update(String(accountId)).digest("hex").slice(0, 10),
+      readable: false,
+      schemaVersion: null,
+      collection: null,
+      integrity: null,
+      diagnostics: { files: 0, totalBytes: 0, lastModifiedAt: null },
+    };
+    try {
+      const archiveRoot = await assertArchiveRoot(item.archiveRoot);
+      const manifest = JSON.parse(await fs.readFile(path.join(archiveRoot, "manifest.json"), "utf8"));
+      const integrity = await new ArchiveStore(archiveRoot).checkIntegrity();
+      summary.readable = true;
+      summary.schemaVersion = Number(manifest.schemaVersion) || null;
+      summary.collection = {
+        status: String(manifest.collection?.status || "unknown").slice(0, 40),
+        parserVersion: Number(manifest.collection?.parserVersion) || null,
+        counts: diagnosticCounts(manifest.collection?.counts),
+        lastRunMode: ["full", "incremental"].includes(manifest.collection?.lastRun?.mode) ? manifest.collection.lastRun.mode : null,
+        lastRunChanges: manifest.collection?.lastRun?.changes ? {
+          added: Math.max(0, Number(manifest.collection.lastRun.changes.added) || 0),
+          updated: Math.max(0, Number(manifest.collection.lastRun.changes.updated) || 0),
+          skipped: Math.max(0, Number(manifest.collection.lastRun.changes.skipped) || 0),
+        } : null,
+      };
+      summary.integrity = {
+        corruptEntries: integrity.corruptEntries.length,
+        missingMedia: integrity.missingMedia.length,
+        unsafeMedia: integrity.unsafeMedia.length,
+      };
+      const diagnosticsDirectory = path.join(archiveRoot, "diagnostics");
+      const names = await fs.readdir(diagnosticsDirectory).catch((error) => error?.code === "ENOENT" ? [] : Promise.reject(error));
+      const diagnosticStats = await Promise.all(names
+        .filter((name) => /^[a-z0-9-]+\.json$/i.test(name))
+        .slice(0, 100)
+        .map(async (name) => {
+          const stat = await fs.stat(path.join(diagnosticsDirectory, name));
+          return { bytes: stat.size, modifiedAt: stat.mtime.toISOString() };
+        }));
+      summary.diagnostics = {
+        files: diagnosticStats.length,
+        totalBytes: diagnosticStats.reduce((total, item) => total + item.bytes, 0),
+        lastModifiedAt: diagnosticStats
+          .map((item) => item.modifiedAt)
+          .sort((left, right) => right.localeCompare(left))[0] || null,
+      };
+    } catch (error) {
+      summary.errorCategory = error instanceof SyntaxError ? "manifest_json_invalid" : "archive_unreadable";
+    }
+    archives.push(summary);
+  }
+  return {
+    format: "qzone-journal-redacted-diagnostics",
+    formatVersion: 1,
+    createdAt: new Date().toISOString(),
+    app: { version: app.getVersion(), platform: process.platform, packaged: app.isPackaged },
+    configuration: {
+      usesDefaultBackupDirectory: path.resolve(preferences.backupDirectory) === path.resolve(defaultBackupDirectory()),
+      knownBackupDirectoryCount: preferences.knownBackupDirectories.length,
+      aiProviderCount: aiConfig.providers.length,
+      aiModelCount: aiConfig.providers.reduce((total, provider) => total + provider.models.length, 0),
+    },
+    accounts: { count: accountState.accounts.length, archiveCount: Object.keys(index.byAccount).length },
+    archives,
+    privacy: {
+      excludes: ["QQ Cookie", "完整 QQ 号", "API Key", "归档正文", "评论与点赞人员", "QQ 原始响应", "本地绝对路径"],
+    },
+  };
+}
+
+async function exportDiagnosticBundle(owner) {
+  const date = new Date().toISOString().slice(0, 10).replace(/-/g, "");
+  const result = await dialog.showSaveDialog(owner, {
+    title: "导出脱敏诊断包",
+    defaultPath: path.join(app.getPath("documents"), `空间备份-脱敏诊断-${date}.json`),
+    filters: [{ name: "JSON 诊断文件", extensions: ["json"] }],
+    properties: ["createDirectory", "showOverwriteConfirmation"],
+  });
+  if (result.canceled || !result.filePath) return { exported: false };
+  const target = path.resolve(result.filePath);
+  const temporary = `${target}.${randomUUID()}.tmp`;
+  const bundle = await buildDiagnosticBundle();
+  await fs.mkdir(path.dirname(target), { recursive: true });
+  await fs.writeFile(temporary, `${JSON.stringify(bundle, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+  await fs.rename(temporary, target);
+  return { exported: true, fileName: path.basename(target), archiveCount: bundle.archives.length };
+}
+
 function publicCollectorEvent(message) {
   const type = ["progress", "complete", "error", "cancelled"].includes(message?.type) ? message.type : "error";
   const changes = message?.changes && typeof message.changes === "object"
@@ -562,33 +746,36 @@ async function startCollectorJob(sender, input) {
   const jobState = { child, sender, terminal: false, archiveRoot };
   collectorJobs.set(jobId, jobState);
 
+  let finishPromise = null;
   const finish = () => {
-    if (jobState.terminal) return;
+    if (finishPromise) return finishPromise;
     jobState.terminal = true;
     collectorJobs.delete(jobId);
     child.kill();
+    finishPromise = clearQzoneCookies(sessionStatus.accountId).catch(() => undefined);
+    return finishPromise;
   };
 
   child.on("message", (message) => {
     void (async () => {
       const event = publicCollectorEvent(message);
       if (event.type === "complete") await rememberLatestArchive(archiveRoot, sessionStatus.accountLabel, sessionStatus.accountId);
+      if (["complete", "error", "cancelled"].includes(event.type)) await finish();
       if (!sender.isDestroyed()) sender.send("desktop:qzone:collector-event", event);
-      if (["complete", "error", "cancelled"].includes(event.type)) finish();
     })().catch(() => {
       if (!sender.isDestroyed()) sender.send("desktop:qzone:collector-event", { type: "error", jobId, progress: 0, phase: "archive_index", message: "采集完成，但无法保存本地档案索引" });
-      finish();
+      void finish();
     });
   });
   child.on("error", () => {
+    void finish();
     if (!sender.isDestroyed()) sender.send("desktop:qzone:collector-event", { type: "error", jobId, progress: 0, phase: "process_error", message: "独立采集进程发生错误" });
   });
   child.on("exit", (code) => {
     if (!jobState.terminal && !sender.isDestroyed()) {
       sender.send("desktop:qzone:collector-event", { type: "error", jobId, progress: 0, phase: "process_exit", message: `采集进程意外退出（代码 ${code}）` });
     }
-    jobState.terminal = true;
-    collectorJobs.delete(jobId);
+    void finish();
   });
   child.postMessage({
     type: "start",
@@ -643,18 +830,27 @@ ipcMain.handle("desktop:app:info", () => ({
   packaged: app.isPackaged,
 }));
 
+ipcMain.handle("desktop:app:export-diagnostics", async (event) => exportDiagnosticBundle(windowFromEvent(event)));
+
 ipcMain.handle("desktop:qzone:get-session-status", async () => publicSessionStatus(await inspectQzoneSession({ validate: true })));
 
-ipcMain.handle("desktop:qzone:list-accounts", async () => listQzoneAccounts());
+ipcMain.handle("desktop:qzone:list-accounts", async () => listAccountsWithArchives());
 
 ipcMain.handle("desktop:qzone:switch-account", async (_event, accountId) => {
   if (collectorJobs.size) throw new Error("备份进行中，完成或取消后才能切换账号");
-  return switchQzoneAccount(accountId);
+  const result = await switchQzoneAccount(accountId);
+  return { ...(await listAccountsWithArchives()), sessionStatus: result.sessionStatus };
 });
 
 ipcMain.handle("desktop:qzone:add-account", async (event) => {
   if (collectorJobs.size) throw new Error("备份进行中，完成或取消后才能添加账号");
-  return addQzoneAccount(windowFromEvent(event));
+  const result = await addQzoneAccount(windowFromEvent(event));
+  return { ...(await listAccountsWithArchives()), sessionStatus: result.sessionStatus };
+});
+
+ipcMain.handle("desktop:qzone:delete-account", async (_event, accountId) => {
+  if (collectorJobs.size) throw new Error("备份进行中，完成或取消后才能删除账号");
+  return deleteAccountData(accountId);
 });
 
 ipcMain.handle("desktop:qzone:open-login", async (event, input = {}) => openQzoneLogin(windowFromEvent(event), {
