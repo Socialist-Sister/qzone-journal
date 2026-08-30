@@ -34,6 +34,10 @@
 
 当前 Alpha 安装包尚未进行商业代码签名，Windows 可能显示 SmartScreen 提示。请只从本仓库 Release 下载并核对 SHA-256。
 
+## 版本规则
+
+版本号采用 `v主版本.功能版本.修复版本[-alpha]`：第二位表示功能性更新，第三位表示 Bug 修复等小更新；带 `-alpha` 的版本不保证正常使用，不带 `-alpha` 的版本基本保证承诺范围内的核心流程可以正常完成。完整约定见 [VERSIONING.md](VERSIONING.md)。
+
 ## 本地开发
 
 需要 Node.js 20+ 和 pnpm 9：
