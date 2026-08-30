@@ -123,7 +123,7 @@ async function run() {
     return { repaired: true, quarantinedEntries: 0, mediaMarkedForRedownload: 0 };
   });
   ipcMain.handle("desktop:qzone:cancel-collection", () => ({ cancelled: true }));
-  ipcMain.handle("desktop:app:info", () => ({ name: "空间备份", version: "0.3.0-alpha", platform: process.platform, packaged: false }));
+  ipcMain.handle("desktop:app:info", () => ({ name: "空间备份", version: "0.3.1-alpha", platform: process.platform, packaged: false }));
   const window = new BrowserWindow({
     width: 1120,
     height: 720,

@@ -97,8 +97,30 @@ async function run(job) {
         pageNumber += 1;
         const page = job.testMode
           ? { entries: pageNumber === 1 ? job.testEntries || [] : [], rawCount: pageNumber === 1 ? (job.testEntries || []).length : 0, hasMore: false, cursor: "" }
-          : await fetchMoodPage({ uin: job.ownerUin, gTk: job.gTk, cursor, count: 50, scope: feedScope, signal: activeAbortController.signal });
+          : await fetchMoodPage({
+              uin: job.ownerUin,
+              gTk: job.gTk,
+              cursor,
+              count: 50,
+              scope: feedScope,
+              signal: activeAbortController.signal,
+              resetStaleCursor: pageNumber === 1 && Boolean(resumeCursor),
+            });
         feedScope = Number(page.requestScope) === 0 ? 0 : 1;
+        if (page.resumeCursorReset) {
+          await store.writeDiagnostic("resume-cursor-reset", {
+            reason: "saved_cursor_rejected",
+            parserCode: String(page.diagnostic?.rejectedCursorCode || ""),
+            restartedFromFirstPage: true,
+          });
+          emit("progress", {
+            jobId: job.jobId,
+            progress: 31,
+            phase: "resetting_resume_cursor",
+            message: "原恢复点已过期，正在从第一页安全重新扫描…",
+            changes,
+          });
+        }
         if (page.diagnostic) {
           pageDiagnostics.push({ pageNumber, ...page.diagnostic });
           await store.writeDiagnostic("feed-pages", { pages: pageDiagnostics.slice(-100) });

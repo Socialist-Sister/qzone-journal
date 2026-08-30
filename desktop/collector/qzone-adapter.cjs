@@ -114,12 +114,40 @@ async function fetchMoodPageOnce({ uin, gTk, cursor = "", count = 50, signal, sc
   throw lastError || new Error("说说接口请求失败");
 }
 
-async function fetchMoodPage(options) {
-  const primary = await fetchMoodPageOnce(options);
-  if (!options.cursor && (options.scope ?? 1) === 1 && primary.rawCount === 0) {
-    const fallback = await fetchMoodPageOnce({ ...options, scope: 0 });
+async function fetchMoodPage(options, fetchPage = fetchMoodPageOnce) {
+  let primary;
+  try {
+    primary = await fetchPage(options);
+  } catch (error) {
+    const canResetStaleCursor = Boolean(
+      options.resetStaleCursor
+      && options.cursor
+      && isAuthenticationFailure(error?.code),
+    );
+    if (!canResetStaleCursor) throw error;
+    primary = await fetchPage({
+      ...options,
+      cursor: "",
+      scope: 1,
+      resetStaleCursor: false,
+    });
+    primary.resumeCursorReset = true;
+    primary.diagnostic = {
+      ...(primary.diagnostic || {}),
+      resumeCursorReset: true,
+      rejectedCursorCode: String(error.code),
+    };
+  }
+  const startedFromFirstPage = !options.cursor || primary.resumeCursorReset;
+  if (startedFromFirstPage && (primary.requestScope ?? options.scope ?? 1) === 1 && primary.rawCount === 0) {
+    const fallback = await fetchPage({ ...options, cursor: "", scope: 0, resetStaleCursor: false });
     fallback.diagnostic.usedEmptyPersonalFeedFallback = true;
     fallback.diagnostic.personalFeedRawCount = primary.rawCount;
+    if (primary.resumeCursorReset) {
+      fallback.resumeCursorReset = true;
+      fallback.diagnostic.resumeCursorReset = true;
+      fallback.diagnostic.rejectedCursorCode = primary.diagnostic.rejectedCursorCode;
+    }
     return fallback;
   }
   return primary;

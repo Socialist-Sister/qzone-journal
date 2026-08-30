@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.3.1-alpha] - 2026-08-30
+
+### 修复
+
+- 修复旧分页恢复点被 QQ 拒绝时误报“QQ 会话需要刷新”的问题。
+- 恢复后的首个请求若因旧游标返回鉴权错误，会自动从第一页重新扫描；稳定内容 ID 会阻止重复保存。
+- 只有无游标的新请求仍返回鉴权错误时才要求重新扫码，避免在过期恢复点上反复登录。
+- 新增恢复游标重置的脱敏诊断与回归测试。
+
 ## [0.3.0-alpha] - 2026-08-30
 
 ### 账号与隐私
@@ -71,6 +80,7 @@
 - QQ 非公开接口可能随服务端变化。
 - 安装包尚未进行代码签名。
 
+[0.3.1-alpha]: https://github.com/Socialist-Sister/qzone-journal/releases/tag/v0.3.1-alpha
 [0.3.0-alpha]: https://github.com/Socialist-Sister/qzone-journal/releases/tag/v0.3.0-alpha
 [0.2.1-alpha]: https://github.com/Socialist-Sister/qzone-journal/releases/tag/v0.2.1-alpha
 [0.2.0-alpha]: https://github.com/Socialist-Sister/qzone-journal/releases/tag/v0.2.0-alpha

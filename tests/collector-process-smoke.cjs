@@ -4,6 +4,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { app, utilityProcess } = require("electron");
 const { analyzeQzoneCookies, publicSessionStatus, selectQzoneCookie } = require("../desktop/qzone-session.cjs");
+const { fetchMoodPage } = require("../desktop/collector/qzone-adapter.cjs");
 
 async function run() {
   const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), "qzone-journal-collector-"));
@@ -15,6 +16,48 @@ async function run() {
   });
 
   try {
+    const staleCursorCalls = [];
+    const recoveredPage = await fetchMoodPage({
+      uin: "12345678",
+      gTk: 123,
+      cursor: "offset=90&pagenum=5",
+      scope: 1,
+      resetStaleCursor: true,
+    }, async (options) => {
+      staleCursorCalls.push(options.cursor);
+      if (options.cursor) {
+        const error = new Error("stale cursor");
+        error.code = -10001;
+        throw error;
+      }
+      return {
+        entries: [],
+        rawCount: 1,
+        requestScope: 1,
+        hasMore: false,
+        cursor: "",
+        diagnostic: {},
+      };
+    });
+    assert.deepEqual(staleCursorCalls, ["offset=90&pagenum=5", ""]);
+    assert.equal(recoveredPage.resumeCursorReset, true);
+    assert.equal(recoveredPage.diagnostic.rejectedCursorCode, "-10001");
+
+    let freshRequestCalls = 0;
+    await assert.rejects(() => fetchMoodPage({
+      uin: "12345678",
+      gTk: 123,
+      cursor: "",
+      scope: 1,
+      resetStaleCursor: true,
+    }, async () => {
+      freshRequestCalls += 1;
+      const error = new Error("expired session");
+      error.code = -10001;
+      throw error;
+    }), /expired session/);
+    assert.equal(freshRequestCalls, 1);
+
     const runJob = (job) => new Promise((resolve, reject) => {
       const timeout = setTimeout(() => reject(new Error("独立采集进程测试超时")), 12000);
       const progress = [];
