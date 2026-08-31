@@ -1,33 +1,27 @@
-# Design QA — v0.6.0-alpha interaction details
+# Design QA — Settings privacy confirmation row
 
 ## Evidence
 
-- Current-problem source: `docs/qa/v0.6.0-alpha/source-current-interactions.png` (543 × 545).
-- Mobile QQ hierarchy references: `reference-mobile-compact.png` (1280 × 818) and `reference-mobile-detail.png` (1280 × 1559).
-- Rendered implementation: `implementation-full.png` (2214 × 1318 at the active Windows scale factor; Electron window 1120 × 720).
-- Focused implementation crop: `implementation-interactions.png` (844 × 568).
-- Combined comparison input: `comparison-interactions.png` (1480 × 620).
-- State: populated local archive, first long saying selected, detail paper scrolled to the likes and comments sections.
+- Source visual truth: `docs/qa/v0.6.0-alpha/settings-confirmation-before.png` (1479 × 171).
+- Rendered desktop implementation: `docs/qa/v0.6.0-alpha/settings-privacy-full.png` (2214 × 1318 at the active Windows scale factor; Electron window 1120 × 720).
+- Focused implementation: `docs/qa/v0.6.0-alpha/settings-confirmation-after.png` (1432 × 156).
+- Combined comparison input: `docs/qa/v0.6.0-alpha/settings-confirmation-comparison.png` (1500 × 360).
+- State: Settings → Privacy & Export, confirmation information row visible.
 
-## Visual judgment
+## Findings and iteration history
 
-The supplied mobile QQ screenshots are hierarchy references, not a request to copy QQ's visual identity. The implementation keeps the project's warm ivory paper, charcoal type, restrained blue, existing icons, spacing, and detail-card anatomy.
+1. **P2 — Related content split across the full row.** In the source capture, the shield icon sat at the far left while its heading and description were pushed to the far right by inherited `space-between` alignment. This weakened grouping and made the row look like a control with a missing middle section.
+2. **Fix.** The informational row now uses start alignment with a 12px gap; the icon, heading, and description read as one compact information group. No copy, icon, color, typography, row height, divider, or surrounding setting behavior changed.
+3. **Post-fix evidence.** The combined comparison shows the same warm-paper row and content with the excessive horizontal void removed. The full Electron smoke suite passed in the target desktop runtime.
 
-### Findings and fixes
+## Required fidelity surfaces
 
-1. **P1 — Missing visible liker information:** the source showed only an aggregate count and an empty-state sentence. The rendered result shows currently visible liker names below the official-looking total and retains a quiet incomplete-list disclosure when the two counts differ.
-2. **P2 — Long nickname wrapping into a narrow column:** the source allowed long names to wrap across several lines. The rendered result limits the nickname to one line with an ellipsis and tooltip while the comment body follows inline and wraps naturally.
-3. **P2 — Data-integrity ambiguity:** the UI now distinguishes total likes from locally expanded names instead of implying the list is exhaustive.
+- Fonts and typography: unchanged; heading and description retain existing size, weight, and line height.
+- Spacing and layout rhythm: corrected only the horizontal grouping; existing vertical padding and dividers remain intact.
+- Colors and tokens: unchanged warm ivory, charcoal, muted gray, and restrained blue.
+- Image and icon quality: existing Phosphor shield icon retained; no replacement asset was introduced.
+- Copy and content: unchanged.
 
-## Required-surface checks
-
-- Typography: unchanged outside the requested one-line nickname treatment.
-- Spacing: likes and comments retain the existing section rhythm and separators.
-- Colors: existing archive blue is used for people names; no new visual language was introduced.
-- Assets and icons: existing icon library and real archived media remain in use.
-- Copy: incomplete interaction details are stated without claiming QQ returned a complete roster.
-- Interaction: the detail paper remains internally scrollable only when content exceeds its measured viewport; Electron regression confirms a 12px bottom safety gap and outer-page chaining when there is no internal range.
-
-No P0, P1, or P2 visual issues remain for this change.
+No remaining P0, P1, or P2 issue is visible in the corrected row.
 
 final result: passed

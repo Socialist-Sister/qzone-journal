@@ -1544,8 +1544,9 @@ input:focus-visible {
 .change-directory-action:hover,
 .open-directory-action:hover { background: var(--blue-soft); border-color: rgba(77, 141, 225, 0.48); }
 .open-directory-action svg { display: block; }
-.settings-info-row { align-items: flex-start; }
+.settings-info-row { justify-content: flex-start; align-items: flex-start; gap: 12px; }
 .settings-info-row > svg { flex: 0 0 auto; margin-top: 1px; color: var(--blue-deep); }
+.settings-info-row > div { min-width: 0; }
 
 .about-product {
   margin-top: 17px;
