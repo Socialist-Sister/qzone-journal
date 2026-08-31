@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.1-alpha] - 2026-09-01
+
+### 界面与可靠性收尾
+
+- 修正浏览器演示中“关于”页面仍显示旧版本号的问题；“检查更新”改为符合实际行为的“查看新版本”。
+- 收紧首页、空档案和账号删除提示，不再暗示未实现的全空间采集或仍保留临时登录会话。
+- 档案详情能够容忍旧档案中的未知内容类型，并忽略非 HTTPS 或格式损坏的外部链接，避免单条异常记录中断整个页面。
+
 ## [0.4.0-alpha] - 2026-08-31
 
 ### 版本整理
@@ -191,6 +199,7 @@
 - QQ 非公开接口可能随服务端变化。
 - 安装包尚未进行代码签名。
 
+[0.4.1-alpha]: https://github.com/Socialist-Sister/qzone-journal/releases/tag/v0.4.1-alpha
 [0.4.0-alpha]: https://github.com/Socialist-Sister/qzone-journal/releases/tag/v0.4.0-alpha
 [0.3.1-alpha]: https://github.com/Socialist-Sister/qzone-journal/releases/tag/v0.3.1-alpha
 [0.3.0-alpha]: https://github.com/Socialist-Sister/qzone-journal/releases/tag/v0.3.0-alpha

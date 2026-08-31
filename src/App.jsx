@@ -77,6 +77,15 @@ function accountDisplayName(account) {
   return account?.nickname || account?.accountLabel || (account?.uin ? `QQ ${account.uin}` : "QQ 账号");
 }
 
+function safeExternalUrl(value) {
+  try {
+    const parsed = new URL(String(value || ""));
+    return parsed.protocol === "https:" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
 function AccountAvatar({ account, className }) {
   const avatarUrl = String(account?.avatarUrl || "");
   const safeAvatarUrl = avatarUrl.startsWith("https://q.qlogo.cn/headimg_dl?") ? avatarUrl : "";
@@ -201,7 +210,7 @@ function TitleBar({ activeView, onNavigate, onWindowAction, isMaximized, account
               {deleteCandidate && (
                 <div className="account-delete-confirm" role="alertdialog" aria-label="确认删除账号全部数据">
                   <strong>删除 {accountDisplayName(deleteCandidate)} 的全部数据？</strong>
-                  <span>账号入口和临时会话会被清除，本地档案将移入系统回收站。</span>
+                  <span>该 QQ 的本地档案入口会被移除，对应档案将移入系统回收站。</span>
                   <code>{deleteCandidate.archivePath || "当前账号尚无本地档案"}</code>
                   <div>
                     <button type="button" disabled={accountBusy} onClick={() => setDeleteCandidateId("")}>取消</button>
@@ -266,7 +275,7 @@ function Home({ onStart, archive }) {
     <section className="home-view" aria-labelledby="home-title">
       <div className="hero-copy">
         <h1 id="home-title">备份我的 QQ 空间</h1>
-        <p className="hero-subtitle">把散落在空间里的记忆，完整带回本地</p>
+        <p className="hero-subtitle">把可读取的说说与配图，安静地整理回本地</p>
         <p className="hero-description">
           应用内扫码登录，无需复制 Cookie，也不用安装浏览器扩展。
         </p>
@@ -737,6 +746,9 @@ function ArchiveView({ archive, onStart, onImportDemo, onReadPage }) {
     });
   }, [entries, filter, query]);
   const selectedEntry = visibleEntries.find((entry) => entry.id === selectedId) ?? visibleEntries[0];
+  const selectedLinks = (selectedEntry?.links || [])
+    .map((link) => ({ link, url: safeExternalUrl(link.url) }))
+    .filter((item) => item.url);
 
   useLayoutEffect(() => {
     const detail = detailRef.current;
@@ -778,7 +790,7 @@ function ArchiveView({ archive, onStart, onImportDemo, onReadPage }) {
         icon={Archive}
         eyebrow="个人档案"
         title="我的档案"
-        description="按时间线浏览说说、日志、照片与互动。"
+        description="按时间线浏览已备份的说说、配图与互动。"
         action="载入演示档案"
         onAction={onImportDemo}
         secondaryAction="创建第一份备份"
@@ -854,16 +866,16 @@ function ArchiveView({ archive, onStart, onImportDemo, onReadPage }) {
           {selectedEntry ? (
             <>
               <div className="detail-heading">
-                <span>{entryTypeMeta[selectedEntry.type].label}</span>
+                <span>{entryTypeMeta[selectedEntry.type]?.label || "内容"}</span>
                 <small>{selectedEntry.displayDate}</small>
                 {selectedEntry.title && <h2>{selectedEntry.title}</h2>}
               </div>
               <p className={`detail-body ${selectedEntry.title ? "" : "titleless"}`}><ArchiveText text={selectedEntry.text} /></p>
-              {selectedEntry.links?.length > 0 && (
+              {selectedLinks.length > 0 && (
                 <div className="detail-links" aria-label="动态中的外部链接">
-                  {selectedEntry.links.map((link) => (
-                    <a key={link.url} href={link.url} target="_blank" rel="noreferrer">
-                      <LinkSimple size={15} /><span>{link.label}</span><small>{new URL(link.url).hostname}</small>
+                  {selectedLinks.map(({ link, url }, index) => (
+                    <a key={`${url.href}-${index}`} href={url.href} target="_blank" rel="noreferrer">
+                      <LinkSimple size={15} /><span>{link.label || "外部链接"}</span><small>{url.hostname}</small>
                     </a>
                   ))}
                 </div>
@@ -1207,7 +1219,7 @@ function SettingsView({ section, onSectionChange, aiConfig, onAiConfigChange, ar
   const [anonymous, setAnonymous] = useState(true);
   const [notice, setNotice] = useState("");
   const [backupDirectory, setBackupDirectory] = useState("文档/空间备份");
-  const [appVersion, setAppVersion] = useState("0.1.0");
+  const [appVersion, setAppVersion] = useState("0.4.1-alpha");
   const [providerEditor, setProviderEditor] = useState(null);
   const [manualModel, setManualModel] = useState("");
   const [detectedModels, setDetectedModels] = useState([]);
@@ -1591,7 +1603,7 @@ function SettingsView({ section, onSectionChange, aiConfig, onAiConfigChange, ar
                     <span>把自己的 QQ 空间整理成可长期保存的本地档案</span>
                     <small>当前版本：{appVersion}</small>
                   </div>
-                  <button className="outline-action" type="button" onClick={() => openProjectPage("/releases")}>检查更新</button>
+                  <button className="outline-action" type="button" onClick={() => openProjectPage("/releases")}>查看新版本</button>
                 </div>
               </article>
 
@@ -1599,7 +1611,7 @@ function SettingsView({ section, onSectionChange, aiConfig, onAiConfigChange, ar
                 <h2>数据与隐私</h2>
                 <div className="principle-list">
                   <div><HardDrive size={23} /><p><strong>档案默认只保存在你的电脑中</strong><span>只有主动生成 AI 回顾或向档案提问时，相关文字才会发送给你配置的模型服务商。</span></p></div>
-                  <div><ShieldCheck size={23} /><p><strong>登录过程保持透明</strong><span>当前版本只会打开 QQ 官方登录页面，不在后台保存你的登录密码。</span></p></div>
+                  <div><ShieldCheck size={23} /><p><strong>登录过程保持透明</strong><span>只打开 QQ 官方登录页面，不读取密码；采集结束后自动清除临时会话。</span></p></div>
                   <div><Code size={23} /><p><strong>本地优先，开源透明</strong><span>采集、整理与桌面端逻辑已公开，方便审查和自行构建。</span></p></div>
                 </div>
               </article>

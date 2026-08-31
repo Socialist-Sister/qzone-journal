@@ -147,7 +147,7 @@ async function run() {
     range: "2026—2026",
     integrity: { needsRepair: false, corruptEntries: [], missingMedia: [], unsafeMedia: [] },
     entries: [
-      { id: "real-post-1", type: "post", date: "2026-08-29T10:00:00+08:00", displayDate: "2026年8月29日 10:00", title: null, text: "真实归档流程测试 @{uin:983109480,nick:Lorrinius.Asuka.,who:1,auto:1} " + "这是一段用于验证详情滚动的长内容。".repeat(160) + " [em]e10264[/em]", links: [{ url: "https://www.bilibili.com/video/BV1Test", label: "转发的视频" }], images: ["./assets/demo/spring-blossom.png"], likes: ["小周", "另一位点赞者"], likeCount: 4, comments: [{ name: "Lorrinius.Asuka.这是一段很长的昵称", text: "测试评论 [em]e10319[/em] @{uin:90002,nick:阿程,who:1,auto:1}" }] },
+      { id: "real-post-1", type: "post", date: "2026-08-29T10:00:00+08:00", displayDate: "2026年8月29日 10:00", title: null, text: "真实归档流程测试 @{uin:983109480,nick:Lorrinius.Asuka.,who:1,auto:1} " + "这是一段用于验证详情滚动的长内容。".repeat(160) + " [em]e10264[/em]", links: [{ url: "https://www.bilibili.com/video/BV1Test", label: "转发的视频" }, { url: "javascript:alert(1)", label: "不安全链接" }, { url: "不是有效网址", label: "损坏链接" }], images: ["./assets/demo/spring-blossom.png"], likes: ["小周", "另一位点赞者"], likeCount: 4, comments: [{ name: "Lorrinius.Asuka.这是一段很长的昵称", text: "测试评论 [em]e10319[/em] @{uin:90002,nick:阿程,who:1,auto:1}" }] },
       { id: "real-post-2", type: "post", date: "2026-08-28T10:00:00+08:00", displayDate: "2026年8月28日 10:00", title: null, text: "一条用于验证页面滚动接力的简短说说。", links: [], images: [], likes: [], comments: [] },
       { id: "real-gallery", type: "post", date: "2026-08-27T12:00:00+08:00", displayDate: "2026年8月27日 12:00", title: null, text: "多图查看器交互测试", links: [], images: ["./assets/demo/spring-blossom.png", "./assets/demo/riverside.png", "./assets/demo/seaside.png"], likes: [], comments: [] },
       ...Array.from({ length: 7 }, (_, index) => ({ id: "real-post-extra-" + index, type: "post", date: "2026-08-27T10:00:00+08:00", displayDate: "2026年8月27日 10:00", title: null, text: "用于让档案外层页面保持可滚动的测试内容 " + (index + 1), links: [], images: [], likes: [], comments: [] })),
@@ -158,7 +158,7 @@ async function run() {
     return { repaired: true, quarantinedEntries: 0, mediaMarkedForRedownload: 0 };
   });
   ipcMain.handle("desktop:qzone:cancel-collection", () => ({ cancelled: true }));
-  ipcMain.handle("desktop:app:info", () => ({ name: "空间备份", version: "0.4.0-alpha", platform: process.platform, packaged: false }));
+  ipcMain.handle("desktop:app:info", () => ({ name: "空间备份", version: "0.4.1-alpha", platform: process.platform, packaged: false }));
   const window = new BrowserWindow({
     width: 1120,
     height: 720,
@@ -237,6 +237,7 @@ async function run() {
     document.querySelector('[aria-label*="新账号"]')?.click();
     await new Promise((resolve) => setTimeout(resolve, 20));
     const hasDeleteConfirmation = document.body.innerText.includes("删除 新账号 的全部数据") && document.body.innerText.includes("QQ-1357-test");
+    const deleteCopyAccurate = document.body.innerText.includes("本地档案入口会被移除") && !document.body.innerText.includes("临时会话会被清除");
     [...document.querySelectorAll("button")].find((button) => button.textContent.trim() === "删除全部数据")?.click();
     await new Promise((resolve) => setTimeout(resolve, 60));
     document.querySelector(".account-trigger")?.click();
@@ -246,6 +247,7 @@ async function run() {
       switched,
       added,
       hasDeleteConfirmation,
+      deleteCopyAccurate,
       deletedAccount: !document.body.innerText.includes("QQ 24681357"),
       showsFullQqNumbers: document.body.innerText.includes("QQ 12345678") && document.body.innerText.includes("QQ 87652468"),
       showsNicknames: document.body.innerText.includes("林屿") && document.body.innerText.includes("小屿测试"),
@@ -258,6 +260,7 @@ async function run() {
   assert.equal(accountFlow.switched, true);
   assert.equal(accountFlow.added, true);
   assert.equal(accountFlow.hasDeleteConfirmation, true);
+  assert.equal(accountFlow.deleteCopyAccurate, true);
   assert.equal(accountFlow.deletedAccount, true);
   assert.equal(deleteAccountCalls, 1);
   assert.equal(accountFlow.showsFullQqNumbers, true);
@@ -321,6 +324,26 @@ async function run() {
   assert.equal(diagnosticsFlow.hasPrivacyBoundary, true);
   assert.equal(diagnosticsFlow.exported, true);
   assert.equal(diagnosticExportCalls, 1);
+
+  const aboutFlow = await window.webContents.executeJavaScript(`(async () => {
+    const findButton = (label) => [...document.querySelectorAll("button")].find((button) => button.textContent.trim() === label);
+    findButton("设置")?.click();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    findButton("关于")?.click();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const result = {
+      showsCurrentVersion: document.body.innerText.includes("当前版本：0.4.1-alpha"),
+      labelsManualUpdateAccurately: Boolean(findButton("查看新版本")) && !findButton("检查更新"),
+      explainsTemporarySession: document.body.innerText.includes("采集结束后自动清除临时会话"),
+    };
+    findButton("首页")?.click();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    return result;
+  })()`);
+  process.stdout.write(`Electron about flow: ${JSON.stringify(aboutFlow)}\n`);
+  assert.equal(aboutFlow.showsCurrentVersion, true);
+  assert.equal(aboutFlow.labelsManualUpdateAccurately, true);
+  assert.equal(aboutFlow.explainsTemporarySession, true);
   if (process.env.QZONE_VISUAL_CAPTURE_DIR) {
     const captureDirectory = path.resolve(process.env.QZONE_VISUAL_CAPTURE_DIR);
     await window.webContents.executeJavaScript(`(async () => {
@@ -363,6 +386,9 @@ async function run() {
     result.openedRealArchive = document.body.innerText.includes("真实归档流程测试");
     result.showsNicknameProfile = document.body.innerText.includes("林屿的空间");
     result.showsExternalLink = document.querySelector('.detail-links a[href^="https://www.bilibili.com/"]')?.textContent.includes("转发的视频") === true;
+    result.filtersUnsafeLinks = document.querySelectorAll(".detail-links a").length === 1
+      && !document.body.innerText.includes("不安全链接")
+      && !document.body.innerText.includes("损坏链接");
     const detail = document.querySelector(".archive-detail");
     const detailStyle = getComputedStyle(detail);
     const detailBottomGap = window.innerHeight - detail.getBoundingClientRect().bottom;
@@ -457,6 +483,7 @@ async function run() {
   assert.equal(backupFlow.openedRealArchive, true);
   assert.equal(backupFlow.showsNicknameProfile, true);
   assert.equal(backupFlow.showsExternalLink, true);
+  assert.equal(backupFlow.filtersUnsafeLinks, true);
   assert.equal(backupFlow.longDetailScrolls, true);
   assert.equal(backupFlow.detailUsesViewportLimit, true);
   assert.equal(backupFlow.detailKeepsBottomGap, true);
