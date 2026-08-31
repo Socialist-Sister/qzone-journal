@@ -92,6 +92,11 @@ async function run() {
 
     assert.equal(terminal.message.type, "complete");
     assert.equal(terminal.message.phase, "collection_complete");
+    assert.deepEqual(terminal.message.adapterHealth, {
+      status: "healthy",
+      adapter: "mood_list",
+      message: "QQ 说说分类接口工作正常",
+    });
     assert.deepEqual(terminal.message.changes, { added: 1, updated: 0, skipped: 0 });
     assert.ok(terminal.progress.length >= 3);
     const manifest = JSON.parse(await fs.readFile(path.join(rootPath, "manifest.json"), "utf8"));
@@ -116,6 +121,7 @@ async function run() {
     assert.equal(partial.message.phase, "collection_partial");
     assert.equal(partial.message.mode, "partial");
     assert.equal(partial.message.truncated, true);
+    assert.equal(partial.message.adapterHealth.status, "partial");
     assert.equal(partial.message.counts.entries, 2);
     const partialCheckpoint = JSON.parse(await fs.readFile(path.join(rootPath, "state", "checkpoint.json"), "utf8"));
     assert.equal(partialCheckpoint.phase, "partial");

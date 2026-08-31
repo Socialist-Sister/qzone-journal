@@ -215,7 +215,7 @@ function compactArchive(archive) {
   const entries = Array.isArray(archive?.entries) ? archive.entries.slice(0, 500) : [];
   return {
     profileName: String(archive?.profileName || "个人空间"),
-    totalEntries: Array.isArray(archive?.entries) ? archive.entries.length : 0,
+    totalEntries: Math.max(Array.isArray(archive?.entries) ? archive.entries.length : 0, Number(archive?.stats?.total) || 0),
     entries: entries.map((entry) => ({
       id: String(entry.id || ""),
       type: String(entry.type || "post"),
@@ -224,10 +224,11 @@ function compactArchive(archive) {
       text: normalizeQzoneMentions(entry.text).slice(0, 2400),
       location: entry.location ? String(entry.location).slice(0, 120) : undefined,
       imageCount: Array.isArray(entry.images) ? entry.images.length : 0,
-      likeCount: Array.isArray(entry.likes) ? entry.likes.length : Number(entry.likes || 0),
+      likeCount: Math.max(Array.isArray(entry.likes) ? entry.likes.length : 0, Number(entry.likeCount) || 0),
+      commentCount: Math.max(Array.isArray(entry.comments) ? entry.comments.length : 0, Number(entry.commentCount) || 0),
       comments: Array.isArray(entry.comments)
         ? entry.comments.slice(0, 30).map((comment) => ({
-          author: normalizeQzoneMentions(comment.author || comment.name),
+          authorName: normalizeQzoneMentions(comment.authorName || comment.author || comment.name),
           text: normalizeQzoneMentions(comment.text).slice(0, 500),
         }))
         : [],
@@ -491,16 +492,8 @@ async function readArchiveIdentity(archiveRoot, suppliedEntries) {
   const uin = /^\d{5,15}$/.test(ownerCandidate) ? ownerCandidate : "";
   let entries = Array.isArray(suppliedEntries) ? suppliedEntries : null;
   if (!entries) {
-    const entriesDirectory = path.join(archiveRoot, "records", "entries");
     try {
-      const names = (await fs.readdir(entriesDirectory)).filter((name) => name.endsWith(".json"));
-      entries = (await Promise.all(names.map(async (name) => {
-        try {
-          return JSON.parse(await fs.readFile(path.join(entriesDirectory, name), "utf8"));
-        } catch {
-          return null;
-        }
-      }))).filter(Boolean);
+      entries = (await new ArchiveStore(archiveRoot).readEntriesPage({ limit: 50 })).entries;
     } catch {
       entries = [];
     }
@@ -513,7 +506,49 @@ async function readArchiveIdentity(archiveRoot, suppliedEntries) {
   return { uin, nickname, avatarUrl: qzoneAvatarUrl(uin) };
 }
 
-async function readLatestArchive(accountId) {
+function toRendererArchiveEntry(entry, archiveRoot) {
+  const date = entry.createdAt || "";
+  const dateValue = date ? new Date(date) : null;
+  const images = (Array.isArray(entry.media) ? entry.media : []).flatMap((media) => {
+    if (!media?.localPath) return [];
+    const mediaPath = path.resolve(archiveRoot, ...String(media.localPath).split("/"));
+    if (!mediaPath.startsWith(`${archiveRoot}${path.sep}`)) return [];
+    return [pathToFileURL(mediaPath).href];
+  });
+  const visibleLikes = (Array.isArray(entry.likes) ? entry.likes : []).map((like) => String(like?.name || like?.nickname || "QQ 用户"));
+  const visibleComments = (Array.isArray(entry.comments) ? entry.comments : []).map((comment) => ({
+    authorName: normalizeQzoneMentions(comment?.authorName || comment?.author || comment?.name || "QQ 用户"),
+    text: normalizeQzoneMentions(comment?.text || comment?.content),
+  }));
+  return {
+    id: String(entry.sourceId),
+    type: ["post", "journal", "album"].includes(entry.type) ? entry.type : "post",
+    date,
+    displayDate: dateValue && !Number.isNaN(dateValue.valueOf())
+      ? new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "long", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false }).format(dateValue)
+      : "时间未知",
+    title: entry.title || null,
+    text: normalizeQzoneMentions(entry.text),
+    links: (Array.isArray(entry.links) ? entry.links : []).flatMap((link) => {
+      try {
+        const url = new URL(String(link?.url || ""));
+        if (url.protocol !== "https:") return [];
+        return [{ url: url.toString(), label: String(link?.label || url.hostname).slice(0, 200) }];
+      } catch {
+        return [];
+      }
+    }),
+    location: entry.location || null,
+    images,
+    mediaCount: images.length,
+    likes: visibleLikes,
+    likeCount: Math.max(visibleLikes.length, Number(entry.metrics?.likeCount) || 0),
+    comments: visibleComments,
+    commentCount: Math.max(visibleComments.length, Number(entry.metrics?.commentCount) || 0),
+  };
+}
+
+async function readLatestArchive(accountId, pageOptions = {}) {
   const index = await readArchiveIndex();
   const activeAccountId = String(accountId || await getActiveQzoneAccountId());
   const accountIndex = index.byAccount[activeAccountId];
@@ -527,21 +562,13 @@ async function readLatestArchive(accountId) {
     if (error?.code === "ENOENT") return null;
     throw error;
   }
-  const entriesDirectory = path.join(archiveRoot, "records", "entries");
-  let names = [];
-  try {
-    names = await fs.readdir(entriesDirectory);
-  } catch (error) {
-    if (error?.code !== "ENOENT") throw error;
-  }
-  const rawEntries = (await Promise.all(names.filter((name) => name.endsWith(".json")).map(async (name) => {
-    try {
-      return JSON.parse(await fs.readFile(path.join(entriesDirectory, name), "utf8"));
-    } catch {
-      return null;
-    }
-  }))).filter(Boolean);
-  const archiveIdentity = await readArchiveIdentity(archiveRoot, rawEntries);
+  const archivePage = await archiveStore.readEntriesPage({
+    cursor: pageOptions?.cursor,
+    limit: pageOptions?.limit,
+    query: pageOptions?.query,
+    type: pageOptions?.type,
+  });
+  const archiveIdentity = await readArchiveIdentity(archiveRoot, archivePage.entries);
   const accountProfile = await updateQzoneAccountProfile(activeAccountId, {
     uin: archiveIdentity.uin || accountIndex.uin,
     nickname: archiveIdentity.nickname || accountIndex.nickname,
@@ -551,47 +578,9 @@ async function readLatestArchive(accountId) {
     avatarUrl: archiveIdentity.avatarUrl || String(accountIndex.avatarUrl || ""),
     accountLabel: String(accountIndex.accountLabel || "QQ 空间"),
   }));
-  const entries = rawEntries.map((entry) => {
-    const date = entry.createdAt || "";
-    const dateValue = date ? new Date(date) : null;
-    const images = (Array.isArray(entry.media) ? entry.media : []).flatMap((media) => {
-      if (!media?.localPath) return [];
-      const mediaPath = path.resolve(archiveRoot, ...String(media.localPath).split("/"));
-      if (!mediaPath.startsWith(`${archiveRoot}${path.sep}`)) return [];
-      return [pathToFileURL(mediaPath).href];
-    });
-    return {
-      id: String(entry.sourceId),
-      type: ["post", "journal", "album"].includes(entry.type) ? entry.type : "post",
-      date,
-      displayDate: dateValue && !Number.isNaN(dateValue.valueOf())
-        ? new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "long", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false }).format(dateValue)
-        : "时间未知",
-      title: entry.title || null,
-      text: normalizeQzoneMentions(entry.text),
-      links: (Array.isArray(entry.links) ? entry.links : []).flatMap((link) => {
-        try {
-          const url = new URL(String(link?.url || ""));
-          if (url.protocol !== "https:") return [];
-          return [{ url: url.toString(), label: String(link?.label || url.hostname).slice(0, 200) }];
-        } catch {
-          return [];
-        }
-      }),
-      location: entry.location || null,
-      images,
-      mediaCount: images.length,
-      likes: (Array.isArray(entry.likes) ? entry.likes : []).map((like) => String(like?.name || like?.nickname || "QQ 用户")),
-      comments: (Array.isArray(entry.comments) ? entry.comments : []).map((comment) => ({
-        name: normalizeQzoneMentions(comment?.name || "QQ 用户"),
-        text: normalizeQzoneMentions(comment?.text || comment?.content),
-      })),
-    };
-  }).sort((a, b) => String(b.date).localeCompare(String(a.date)));
-  const years = entries.map((entry) => Number(String(entry.date).slice(0, 4))).filter(Number.isFinite);
+  const entries = archivePage.entries.map((entry) => toRendererArchiveEntry(entry, archiveRoot));
   const completedAt = manifest.collection?.lastCompletedAt || manifest.updatedAt;
   const imported = completedAt ? new Date(completedAt) : new Date();
-  const integrity = await archiveStore.checkIntegrity();
   return {
     id: String(manifest.archiveId || "local-qzone-archive"),
     isDemo: false,
@@ -601,8 +590,10 @@ async function readLatestArchive(accountId) {
     profileName: `${accountProfile.nickname || (accountProfile.uin ? `QQ ${accountProfile.uin}` : accountProfile.accountLabel || "QQ 空间")}的空间`,
     lastBackupAt: imported.toISOString(),
     importedAt: new Intl.DateTimeFormat("zh-CN", { dateStyle: "long", timeStyle: "short" }).format(imported),
-    range: years.length ? `${Math.min(...years)}—${Math.max(...years)}` : "尚无内容",
-    integrity,
+    range: archivePage.range ? `${archivePage.range.firstYear}—${archivePage.range.lastYear}` : "尚无内容",
+    integrity: { needsRepair: false, unchecked: true },
+    stats: archivePage.stats,
+    page: archivePage.page,
     entries,
   };
 }
@@ -966,7 +957,12 @@ ipcMain.handle("desktop:qzone:open-login", async (event, input = {}) => openQzon
 
 ipcMain.handle("desktop:qzone:start-collection", async (event, input) => startCollectorJob(event.sender, input));
 
-ipcMain.handle("desktop:qzone:read-archive", async () => readLatestArchive());
+ipcMain.handle("desktop:qzone:read-archive", async (_event, input = {}) => readLatestArchive(undefined, {
+  cursor: String(input?.cursor || ""),
+  limit: Math.min(300, Math.max(1, Number(input?.limit) || 100)),
+  query: String(input?.query || "").slice(0, 200),
+  type: ["post", "journal", "album"].includes(input?.type) ? input.type : "all",
+}));
 
 ipcMain.handle("desktop:qzone:repair-archive", async () => {
   if (collectorJobs.size) throw new Error("备份进行中，完成或取消后才能检查档案");
@@ -1035,7 +1031,8 @@ ipcMain.handle("desktop:ai:test-connection", async (_event, { selection = {}, dr
 
 ipcMain.handle("desktop:ai:generate-review", async (_event, { archive, selection } = {}) => {
   const config = await resolveAiConfig(selection);
-  const archivePayload = compactArchive(archive);
+  const sourceArchive = archive?.isDemo ? archive : await readLatestArchive(undefined, { limit: 300 });
+  const archivePayload = compactArchive(sourceArchive);
   if (!archivePayload.entries.length) throw new Error("当前档案没有可供总结的内容");
   const content = await requestChatCompletion(config, [
     { role: "system", content: `${AI_SCOPE_PROMPT}\n你正在生成一篇结构化年度回顾。必须只返回一个 JSON 对象，不要使用 Markdown；即使接口未启用 JSON 模式，也必须遵守。` },
@@ -1049,7 +1046,8 @@ ipcMain.handle("desktop:ai:generate-review", async (_event, { archive, selection
 
 ipcMain.handle("desktop:ai:ask-archive", async (_event, { archive, question, context = [], selection } = {}) => {
   const config = await resolveAiConfig(selection);
-  const archivePayload = compactArchive(archive);
+  const sourceArchive = archive?.isDemo ? archive : await readLatestArchive(undefined, { limit: 300 });
+  const archivePayload = compactArchive(sourceArchive);
   const cleanQuestion = String(question || "").trim().slice(0, 1200);
   if (!cleanQuestion) throw new Error("请输入要向档案询问的问题");
   const recentContext = Array.isArray(context) ? context.slice(-4).map((item) => ({

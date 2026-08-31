@@ -718,6 +718,29 @@ input:focus-visible {
   gap: 16px;
 }
 .timeline-list { min-width: 0; display: grid; gap: 8px; }
+.timeline-list.is-virtual {
+  position: relative;
+  min-height: 330px;
+  overflow: visible;
+}
+.timeline-list.is-empty { min-height: 330px; }
+.timeline-virtual-space { position: relative; min-height: 100%; }
+.timeline-list.is-virtual .timeline-entry {
+  position: absolute;
+  right: 0;
+  left: 0;
+  height: 104px;
+}
+.timeline-page-status {
+  position: absolute;
+  right: 0;
+  left: 0;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  color: #858b90;
+  font-size: 10px;
+}
 .timeline-entry {
   width: 100%;
   min-height: 96px;
@@ -893,6 +916,9 @@ input:focus-visible {
 .detail-section { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line); }
 .detail-section > strong { display: flex; align-items: center; gap: 6px; font-size: 12px; }
 .detail-section > p { margin: 8px 0 0; color: #727570; font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; word-break: break-word; }
+.detail-expansion-note { display: block; margin-top: 5px; color: #93918b; font-size: 9px; line-height: 1.5; }
+.archive-stats-note { margin: 7px 0 0; color: #8b8c88; font-size: 9px; }
+.timeline-error { margin-top: 8px; display: flex; align-items: center; gap: 6px; color: #9b5c4f; font-size: 10px; }
 .detail-comment { display: grid; grid-template-columns: 48px 1fr; gap: 7px; }
 .detail-comment b { color: #536f94; }
 .detail-comment > span { min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; }

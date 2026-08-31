@@ -12,7 +12,8 @@ QQ-{uin}/
 │  ├─ index.json     # source-to-local media mapping and future integrity metadata
 │  └─ files/         # downloaded images and videos
 ├─ state/
-│  └─ checkpoint.json
+│  ├─ checkpoint.json
+│  └─ entry-index.json # incremental summary, paging, and search index
 └─ diagnostics/
    ├─ session-check.json
    ├─ collection-plan.json
@@ -27,6 +28,8 @@ QQ-{uin}/
 - Raw cookies, passwords, API keys, and browser storage are never written into an archive.
 - `state/checkpoint.json` records the active phase and future per-endpoint cursors so an interrupted job can resume without duplicating completed pages.
 - Media bytes and their index are separate from normalized content records so exports can choose whether to embed, link, or omit originals.
+- Entry and media indexes are cached during a collection page and flushed atomically in batches. `entry-index.json` is a rebuildable acceleration layer; per-entry JSON remains the source of truth.
+- Official comment/like totals live in `metrics`; expanded `comments` and `likes` are explicitly best-effort visible details. Comment authors use the canonical `authorName` field.
 - Endpoint responses are normalized at the collector boundary. UI and export code consume the local schema rather than depending on QQ response shapes.
 - `archive-index.json` lives in Electron user data and points to the most recently completed archive. It contains only the local path and masked account label, allowing the UI to reopen an archive without restoring a QQ session.
 

@@ -3,6 +3,21 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { app, BrowserWindow, ipcMain } = require("electron");
 
+if (process.env.QZONE_VISUAL_CAPTURE_DIR) app.disableHardwareAcceleration();
+
+async function capturePageWithRetry(window, rect) {
+  let lastError;
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    try {
+      return await window.webContents.capturePage(rect);
+    } catch (error) {
+      lastError = error;
+      await new Promise((resolve) => setTimeout(resolve, 160 * (attempt + 1)));
+    }
+  }
+  throw lastError;
+}
+
 async function run() {
   let mockAiConfig = { configured: false, providers: [], modelOptions: [] };
   const testedModels = [];
@@ -132,7 +147,7 @@ async function run() {
     return { repaired: true, quarantinedEntries: 0, mediaMarkedForRedownload: 0 };
   });
   ipcMain.handle("desktop:qzone:cancel-collection", () => ({ cancelled: true }));
-  ipcMain.handle("desktop:app:info", () => ({ name: "空间备份", version: "0.4.0-alpha", platform: process.platform, packaged: false }));
+  ipcMain.handle("desktop:app:info", () => ({ name: "空间备份", version: "0.5.0-alpha", platform: process.platform, packaged: false }));
   const window = new BrowserWindow({
     width: 1120,
     height: 720,
@@ -245,7 +260,7 @@ async function run() {
       if (!document.querySelector(".account-menu")) document.querySelector(".account-trigger")?.click();
       await new Promise((resolve) => setTimeout(resolve, 80));
     })()`);
-    await window.capturePage().then((image) => fs.writeFileSync(path.join(captureDirectory, "account-profile-menu.png"), image.toPNG()));
+    await capturePageWithRetry(window).then((image) => fs.writeFileSync(path.join(captureDirectory, "account-profile-menu.png"), image.toPNG()));
   }
 
   const directoryFlow = await window.webContents.executeJavaScript(`(async () => {
@@ -335,6 +350,10 @@ async function run() {
     result.normalizedQqMentions = document.body.innerText.includes("@Lorrinius.Asuka.")
       && document.body.innerText.includes("@阿程")
       && !document.body.innerText.includes("@{uin:");
+    const timelineList = document.querySelector(".timeline-list.is-virtual");
+    const timelineStyle = getComputedStyle(timelineList);
+    result.timelineUsesOuterScroll = timelineStyle.overflowY === "visible"
+      && timelineList.scrollHeight <= timelineList.clientHeight + 1;
     document.querySelector(".media-count-1 button")?.click();
     await new Promise((resolve) => setTimeout(resolve, 40));
     const viewer = document.querySelector(".image-viewer");
@@ -412,6 +431,7 @@ async function run() {
   assert.equal(backupFlow.replacedQqEmotion, true);
   assert.equal(backupFlow.qqEmotionUsesOfficialAsset, true);
   assert.equal(backupFlow.normalizedQqMentions, true);
+  assert.equal(backupFlow.timelineUsesOuterScroll, true);
   assert.equal(backupFlow.singleImageCentered, true);
   assert.equal(backupFlow.singleImageUsesStage, true);
   assert.equal(backupFlow.viewerImageKeepsVerticalSafety, true);
@@ -495,7 +515,7 @@ async function run() {
         await new Promise((resolve) => setTimeout(resolve, 30));
       }
     })()`);
-    fs.writeFileSync(path.join(captureDirectory, "image-viewer-controls.png"), (await window.webContents.capturePage()).toPNG());
+    fs.writeFileSync(path.join(captureDirectory, "image-viewer-controls.png"), (await capturePageWithRetry(window)).toPNG());
   }
   await window.webContents.executeJavaScript(`document.querySelector('[aria-label="关闭图片查看器"]')?.click()`);
   process.stdout.write(`Electron viewer control flow: ${JSON.stringify({ viewerControlTargets, zoomAfterNativePlus, zoomAfterNativeFit, counterAfterNativeNext, panBoundary })}\n`);
@@ -532,7 +552,7 @@ async function run() {
         viewportHeight: window.innerHeight,
       };
     })()`);
-    fs.writeFileSync(path.join(captureDirectory, "image-viewer-fit.png"), (await window.webContents.capturePage()).toPNG());
+    fs.writeFileSync(path.join(captureDirectory, "image-viewer-fit.png"), (await capturePageWithRetry(window)).toPNG());
     assert.equal(viewerVisualMetrics.open, true);
     assert.equal(viewerVisualMetrics.imageTop >= viewerVisualMetrics.stageTop - 1, true);
     assert.equal(viewerVisualMetrics.imageBottom <= viewerVisualMetrics.stageBottom + 1, true);
@@ -549,7 +569,7 @@ async function run() {
       const rect = detail.getBoundingClientRect();
       return { bottomGap: window.innerHeight - rect.bottom, scrollable: detail.classList.contains("is-scrollable"), bottom: rect.bottom, viewport: window.innerHeight };
     })()`);
-    fs.writeFileSync(path.join(captureDirectory, "archive-detail-scrollable.png"), (await window.webContents.capturePage()).toPNG());
+    fs.writeFileSync(path.join(captureDirectory, "archive-detail-scrollable.png"), (await capturePageWithRetry(window)).toPNG());
     const shortVisualMetrics = await window.webContents.executeJavaScript(`(async () => {
       const utility = document.querySelector(".utility-view");
       utility.scrollTop = Math.min(260, utility.scrollHeight - utility.clientHeight);
@@ -560,7 +580,19 @@ async function run() {
       const rect = detail.getBoundingClientRect();
       return { bottomGap: window.innerHeight - rect.bottom, scrollable: detail.classList.contains("is-scrollable"), outerScrollable: utility.scrollHeight > utility.clientHeight, overflowY: getComputedStyle(detail).overflowY };
     })()`);
-    fs.writeFileSync(path.join(captureDirectory, "archive-detail-page-scroll.png"), (await window.webContents.capturePage()).toPNG());
+    fs.writeFileSync(path.join(captureDirectory, "archive-detail-page-scroll.png"), (await capturePageWithRetry(window)).toPNG());
+    const timelineCaptureRect = await window.webContents.executeJavaScript(`(() => {
+      const rect = document.querySelector(".timeline-list")?.getBoundingClientRect();
+      return rect ? {
+        x: Math.max(0, Math.floor(rect.left)),
+        y: Math.max(0, Math.floor(rect.top)),
+        width: Math.max(1, Math.min(window.innerWidth - Math.floor(rect.left), Math.ceil(rect.width))),
+        height: Math.max(1, Math.min(window.innerHeight - Math.max(0, Math.floor(rect.top)), Math.ceil(rect.height))),
+      } : null;
+    })()`);
+    if (timelineCaptureRect) {
+      fs.writeFileSync(path.join(captureDirectory, "timeline-outer-scroll.png"), (await capturePageWithRetry(window, timelineCaptureRect)).toPNG());
+    }
     const wheelTarget = await window.webContents.executeJavaScript(`(() => {
       const detail = document.querySelector(".archive-detail");
       const utility = document.querySelector(".utility-view");

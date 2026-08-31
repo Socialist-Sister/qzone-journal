@@ -568,13 +568,165 @@ function ImageViewer({ images, index, onChange, onClose }) {
   );
 }
 
-function ArchiveView({ archive, onStart, onImportDemo }) {
+const TIMELINE_ROW_HEIGHT = 112;
+
+function VirtualTimeline({ entries, selectedId, onSelect, hasMore, loading, onLoadMore }) {
+  const listRef = useRef(null);
+  const [scrollTop, setScrollTop] = useState(0);
+  const [viewportHeight, setViewportHeight] = useState(420);
+  const loadStateRef = useRef({ hasMore, loading, onLoadMore });
+  const loadRequestedRef = useRef(false);
+  loadStateRef.current = { hasMore, loading, onLoadMore };
+  const overscan = 5;
+  const startIndex = Math.max(0, Math.floor(scrollTop / TIMELINE_ROW_HEIGHT) - overscan);
+  const visibleCount = Math.ceil(viewportHeight / TIMELINE_ROW_HEIGHT) + overscan * 2;
+  const endIndex = Math.min(entries.length, startIndex + visibleCount);
+
+  useLayoutEffect(() => {
+    const list = listRef.current;
+    const scroller = list?.closest(".utility-view");
+    if (!list || !scroller) return undefined;
+    const update = () => {
+      const listRect = list.getBoundingClientRect();
+      const scrollerRect = scroller.getBoundingClientRect();
+      setScrollTop(Math.max(0, scrollerRect.top - listRect.top));
+      setViewportHeight(scroller.clientHeight || 420);
+      const state = loadStateRef.current;
+      const nearListEnd = listRect.bottom <= scrollerRect.bottom + TIMELINE_ROW_HEIGHT * 3;
+      if (nearListEnd && state.hasMore && !state.loading && !loadRequestedRef.current) {
+        loadRequestedRef.current = true;
+        Promise.resolve(state.onLoadMore?.()).finally(() => {
+          loadRequestedRef.current = false;
+        });
+      }
+    };
+    const observer = new ResizeObserver(update);
+    observer.observe(list);
+    observer.observe(scroller);
+    scroller.addEventListener("scroll", update, { passive: true });
+    update();
+    return () => {
+      observer.disconnect();
+      scroller.removeEventListener("scroll", update);
+    };
+  }, [entries.length > 0]);
+
+  useEffect(() => {
+    if (!entries.some((entry) => entry.id === selectedId)) {
+      listRef.current?.closest('.utility-view')?.scrollTo({ top: 0 });
+    }
+  }, [entries, selectedId]);
+
+  if (!entries.length) {
+    return (
+      <div className="timeline-list is-empty">
+        <div className="archive-no-results">
+          <MagnifyingGlass size={28} />
+          <strong>{loading ? "正在读取档案…" : "没有找到相关内容"}</strong>
+          <span>{loading ? "只会读取当前页，不会一次载入全部记录。" : "换一个关键词或内容类型试试。"}</span>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="timeline-list is-virtual" aria-label="档案时间线" ref={listRef}>
+      <div className="timeline-virtual-space" style={{ height: entries.length * TIMELINE_ROW_HEIGHT + (hasMore ? 38 : 0) }}>
+        {entries.slice(startIndex, endIndex).map((entry, index) => {
+          const TypeIcon = entryTypeMeta[entry.type]?.icon || NotePencil;
+          const isSelected = selectedId === entry.id;
+          const absoluteIndex = startIndex + index;
+          return (
+            <button
+              className={`timeline-entry ${isSelected ? "selected" : ""}`}
+              style={{ top: absoluteIndex * TIMELINE_ROW_HEIGHT }}
+              key={entry.id}
+              type="button"
+              aria-pressed={isSelected}
+              onClick={() => onSelect(entry.id)}
+            >
+              <span className="timeline-type"><TypeIcon size={18} /></span>
+              <span className="timeline-entry-copy">
+                <span className="timeline-date">{entry.displayDate}</span>
+                {entry.title && <strong>{entry.title}</strong>}
+                <span className={entry.title ? "timeline-excerpt" : "timeline-post-copy"}><ArchiveText text={entry.text} /></span>
+                <small>
+                  {entry.images?.length ? <><Images size={14} />{entry.images.length}</> : null}
+                  <Heart size={14} />{Math.max(entry.likes.length, Number(entry.likeCount) || 0)}
+                  <ChatsCircle size={14} />{Math.max(entry.comments.length, Number(entry.commentCount) || 0)}
+                </small>
+              </span>
+            </button>
+          );
+        })}
+        {hasMore && <div className="timeline-page-status" style={{ top: entries.length * TIMELINE_ROW_HEIGHT }}>{loading ? "正在读取更多…" : "继续向下滚动以读取更多"}</div>}
+      </div>
+    </div>
+  );
+}
+
+function ArchiveView({ archive, onStart, onImportDemo, onReadPage }) {
   const [filter, setFilter] = useState("all");
   const [query, setQuery] = useState("");
   const [selectedId, setSelectedId] = useState("");
   const [viewer, setViewer] = useState(null);
+  const [pagedEntries, setPagedEntries] = useState(archive?.entries ?? []);
+  const [page, setPage] = useState(archive?.page ?? null);
+  const [pageLoading, setPageLoading] = useState(false);
+  const [pageError, setPageError] = useState("");
   const detailRef = useRef(null);
-  const entries = archive?.entries ?? [];
+  const entries = archive?.isDemo ? archive.entries : pagedEntries;
+
+  useEffect(() => {
+    setPagedEntries(archive?.entries ?? []);
+    setPage(archive?.page ?? null);
+    setPageError("");
+    setSelectedId("");
+  }, [archive?.id, archive?.lastBackupAt]);
+
+  useEffect(() => {
+    if (!archive || archive.isDemo || !onReadPage) return undefined;
+    let cancelled = false;
+    const timer = window.setTimeout(async () => {
+      setPageLoading(true);
+      setPageError("");
+      try {
+        const result = await onReadPage({ cursor: "", limit: 100, query, type: filter });
+        if (cancelled) return;
+        setPagedEntries(result?.entries ?? []);
+        setPage(result?.page ?? null);
+        setSelectedId("");
+      } catch (error) {
+        if (!cancelled) setPageError(readableError(error));
+      } finally {
+        if (!cancelled) setPageLoading(false);
+      }
+    }, query ? 260 : 0);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [archive?.id, archive?.isDemo, filter, query]);
+
+  const loadMoreEntries = async () => {
+    if (archive?.isDemo || !page?.hasMore || pageLoading || !onReadPage) return;
+    setPageLoading(true);
+    setPageError("");
+    try {
+      const result = await onReadPage({ cursor: page.nextCursor, limit: 100, query, type: filter });
+      const additions = result?.entries ?? [];
+      setPagedEntries((current) => {
+        const known = new Set(current.map((entry) => entry.id));
+        return [...current, ...additions.filter((entry) => !known.has(entry.id))];
+      });
+      setPage(result?.page ?? null);
+    } catch (error) {
+      setPageError(readableError(error));
+    } finally {
+      setPageLoading(false);
+    }
+  };
+
   const visibleEntries = useMemo(() => {
     const keyword = query.trim().toLowerCase();
     return entries.filter((entry) => {
@@ -663,9 +815,10 @@ function ArchiveView({ archive, onStart, onImportDemo }) {
         <div><strong>{stats.post}</strong><span>说说</span></div>
         <div><strong>{stats.journal}</strong><span>日志</span></div>
         <div><strong>{stats.album}</strong><span>相册</span></div>
-        <div><strong>{stats.comments}</strong><span>评论</span></div>
-        <div><strong>{stats.likes}</strong><span>点赞</span></div>
+        <div><strong>{stats.comments}</strong><span>评论总数</span></div>
+        <div><strong>{stats.likes}</strong><span>点赞总数</span></div>
       </div>
+      {(stats.visibleComments < stats.comments || stats.visibleLikes < stats.likes) && <p className="archive-stats-note">互动总数来自 QQ；评论内容和点赞者仅显示本次接口返回的可见详情。</p>}
 
       <div className="archive-tools">
         <label className="archive-search">
@@ -688,38 +841,14 @@ function ArchiveView({ archive, onStart, onImportDemo }) {
       </div>
 
       <div className="archive-workspace">
-        <div className="timeline-list" aria-label="档案时间线">
-          {visibleEntries.length ? visibleEntries.map((entry) => {
-            const TypeIcon = entryTypeMeta[entry.type].icon;
-            const isSelected = selectedEntry?.id === entry.id;
-            return (
-              <button
-                className={`timeline-entry ${isSelected ? "selected" : ""}`}
-                key={entry.id}
-                type="button"
-                aria-pressed={isSelected}
-                onClick={() => setSelectedId(entry.id)}
-              >
-                <span className="timeline-type"><TypeIcon size={18} /></span>
-                <span className="timeline-entry-copy">
-                  <span className="timeline-date">{entry.displayDate}</span>
-                  {entry.title && <strong>{entry.title}</strong>}
-                  <span className={entry.title ? "timeline-excerpt" : "timeline-post-copy"}><ArchiveText text={entry.text} /></span>
-                  <small>
-                    {entry.images?.length ? <><Images size={14} />{entry.images.length}</> : null}
-                    <Heart size={14} />{entry.likes.length}<ChatsCircle size={14} />{entry.comments.length}
-                  </small>
-                </span>
-              </button>
-            );
-          }) : (
-            <div className="archive-no-results">
-              <MagnifyingGlass size={28} />
-              <strong>没有找到相关内容</strong>
-              <span>换一个关键词或内容类型试试。</span>
-            </div>
-          )}
-        </div>
+        <VirtualTimeline
+          entries={visibleEntries}
+          selectedId={selectedEntry?.id || ""}
+          onSelect={setSelectedId}
+          hasMore={Boolean(!archive.isDemo && page?.hasMore)}
+          loading={pageLoading}
+          onLoadMore={loadMoreEntries}
+        />
 
         <aside className="archive-detail" aria-live="polite" ref={detailRef}>
           {selectedEntry ? (
@@ -742,19 +871,22 @@ function ArchiveView({ archive, onStart, onImportDemo }) {
               <MediaGrid images={selectedEntry.images} onOpen={(imageIndex) => setViewer({ images: selectedEntry.images, index: imageIndex })} />
               {selectedEntry.location && <p className="detail-location"><MapPin size={16} />{selectedEntry.location}</p>}
               <div className="detail-section">
-                <strong><Heart size={17} />{selectedEntry.likes.length} 人点赞</strong>
-                <p><ArchiveText text={selectedEntry.likes.join("、")} /></p>
+                <strong><Heart size={17} />{Math.max(selectedEntry.likes.length, Number(selectedEntry.likeCount) || 0)} 人点赞</strong>
+                <p>{selectedEntry.likes.length ? <ArchiveText text={selectedEntry.likes.join("、")} /> : "QQ 本次没有返回可见的点赞者名单。"}</p>
+                {Number(selectedEntry.likeCount) > selectedEntry.likes.length && <small className="detail-expansion-note">已保存 {selectedEntry.likes.length} 位当前可见点赞者，名单可能不完整。</small>}
               </div>
               <div className="detail-section">
-                <strong><ChatsCircle size={17} />评论 {selectedEntry.comments.length}</strong>
+                <strong><ChatsCircle size={17} />评论 {Math.max(selectedEntry.comments.length, Number(selectedEntry.commentCount) || 0)}</strong>
                 {selectedEntry.comments.length ? selectedEntry.comments.map((comment, index) => (
-                  <p className="detail-comment" key={`${selectedEntry.id}-${index}`}><b><ArchiveText text={comment.name} /></b><span><ArchiveText text={comment.text} /></span></p>
+                  <p className="detail-comment" key={`${selectedEntry.id}-${index}`}><b><ArchiveText text={comment.authorName || comment.name || "QQ 用户"} /></b><span><ArchiveText text={comment.text} /></span></p>
                 )) : <p>这条内容还没有评论。</p>}
+                {Number(selectedEntry.commentCount) > selectedEntry.comments.length && <small className="detail-expansion-note">已保存 {selectedEntry.comments.length} 条当前可见评论，详情可能不完整。</small>}
               </div>
             </>
           ) : <p className="detail-placeholder">从左侧选择一条内容查看详情。</p>}
         </aside>
       </div>
+      {pageError && <div className="timeline-error" role="alert"><WarningCircle size={15} />{pageError}</div>}
       {viewer && (
         <ImageViewer
           images={viewer.images}
@@ -1794,7 +1926,7 @@ function BackupDialog({ onClose, onComplete, onAccountChange }) {
             <p className="dialog-kicker">{collectionResult ? "本地备份完成" : "第一次备份完成"}</p>
             <h2 id="dialog-title">{collectionResult ? `${collectionResult.counts?.entries || 0} 条内容已归档` : `${demoTotal} 条记忆已安全回家`}</h2>
             {collectionResult
-              ? <>{collectionResult.truncated && <p className="dialog-warning"><WarningCircle size={17} weight="fill" />QQ 本次只返回了部分时间线，当前可读取内容已经保存；稍后再次备份仍会继续尝试更早内容。</p>}<p>本次新增 {collectionResult.changes?.added || 0} 条、更新 {collectionResult.changes?.updated || 0} 条、跳过 {collectionResult.changes?.skipped || 0} 条未变化内容；共保存 {collectionResult.counts?.media || 0} 张图片（{formatFileSize(collectionResult.counts?.mediaBytes)}）、{collectionResult.counts?.comments || 0} 条评论和 {collectionResult.counts?.likes || 0} 条可见点赞记录。QQ 临时会话已自动清除。</p><code className="archive-path">{collectionResult.archivePath}</code>{flowError && <p className="dialog-error" role="alert"><WarningCircle size={17} weight="fill" />{flowError}</p>}</>
+              ? <>{collectionResult.truncated && <p className="dialog-warning"><WarningCircle size={17} weight="fill" />QQ 本次只返回了部分时间线，当前可读取内容已经保存；稍后再次备份仍会继续尝试更早内容。</p>}{collectionResult.adapterHealth?.status === "degraded" && <p className="dialog-warning"><WarningCircle size={17} weight="fill" />{collectionResult.adapterHealth.message}</p>}<p>本次新增 {collectionResult.changes?.added || 0} 条、更新 {collectionResult.changes?.updated || 0} 条、跳过 {collectionResult.changes?.skipped || 0} 条未变化内容；共保存 {collectionResult.counts?.media || 0} 张图片（{formatFileSize(collectionResult.counts?.mediaBytes)}）。QQ 报告 {collectionResult.counts?.comments || 0} 条评论、{collectionResult.counts?.likes || 0} 次点赞，其中已展开保存 {collectionResult.counts?.visibleComments || 0} 条评论和 {collectionResult.counts?.visibleLikes || 0} 位点赞者。QQ 临时会话已自动清除。</p><code className="archive-path">{collectionResult.archivePath}</code>{flowError && <p className="dialog-error" role="alert"><WarningCircle size={17} weight="fill" />{flowError}</p>}</>
               : <p>当前是演示数据。正式采集接入后，档案会保存在你选择的本地目录。</p>}
             <button className="dialog-primary" type="button" disabled={openingArchive} onClick={collectionResult ? openCollectedArchive : onComplete}>{openingArchive ? <><LoadingSpinner />正在读取档案…</> : <>{collectionResult ? "打开我的档案" : "查看我的档案"}<ArrowRight size={20} /></>}</button>
           </div>
@@ -2036,7 +2168,7 @@ export function App() {
           <img src="./assets/looseleaf-edge.png" alt="" draggable={false} />
         </div>
         {activeView === "home" && <Home onStart={() => start("app")} archive={archiveData} />}
-        {activeView === "archive" && <ArchiveView archive={archiveData} onStart={() => start("app")} onImportDemo={() => setDemoDialogOpen(true)} />}
+        {activeView === "archive" && <ArchiveView archive={archiveData} onStart={() => start("app")} onImportDemo={() => setDemoDialogOpen(true)} onReadPage={(options) => window.desktop?.qzone?.readArchive?.(options)} />}
         <div className="persistent-view" hidden={activeView !== "review"}>
           <ReviewView key={accountState.activeAccountId || "default"} archive={archiveData} aiConfig={aiConfig} onOpenAiSettings={openAiSettings} onStart={() => start("app")} onImportDemo={() => setDemoDialogOpen(true)} />
         </div>

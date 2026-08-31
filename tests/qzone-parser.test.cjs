@@ -19,6 +19,7 @@ test("feeds3 parser normalizes a titleless post, media, comments and visible lik
   assert.equal(page.entries[0].text, "今天拍到一朵云&晚霞");
   assert.equal(page.entries[0].media.length, 1);
   assert.equal(page.entries[0].comments[0].text, "真好看");
+  assert.equal(page.entries[0].comments[0].authorName, "小周");
   assert.deepEqual(page.entries[0].likes.map((like) => like.name), ["小周", "阿程"]);
   assert.equal(page.entries[0].metrics.likeCount, 2);
   assert.equal(page.hasMore, true);
@@ -70,7 +71,7 @@ test("mood category parser normalizes own text, pictures, forwards, comments and
   assert.equal(page.entries[0].comments[1].isReply, true);
   assert.equal(page.entries[0].likes[0].name, "小周");
   assert.equal(page.entries[0].metrics.likeCount, 3);
-  assert.equal(page.entries[0].sourceMeta.parserVersion, 6);
+  assert.equal(page.entries[0].sourceMeta.parserVersion, 7);
   assert.equal(page.total, 3);
   assert.equal(page.cursor, "2");
   assert.equal(page.hasMore, true);
@@ -158,7 +159,7 @@ test("feeds3 parser removes escaped template whitespace and excludes non-status 
   const page = parseFeeds3Page(payload, "12345678");
   assert.equal(page.entries.length, 1);
   assert.equal(page.entries[0].text, "真正的正文\n第二行");
-  assert.equal(page.entries[0].sourceMeta.parserVersion, 6);
+  assert.equal(page.entries[0].sourceMeta.parserVersion, 7);
   assert.match(page.cursor, /pagenum=2/);
   assert.equal(page.eligibleCount, 1);
 });

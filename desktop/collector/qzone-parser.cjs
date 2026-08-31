@@ -184,7 +184,7 @@ function emotionComments(rawItem) {
         comments.push({
           id,
           authorUin: String(item.uin || item.fuin || ""),
-          name: stripHtml(item.name || item.nickname || "") || "QQ 用户",
+          authorName: stripHtml(item.name || item.nickname || "") || "QQ 用户",
           text,
           isReply: Boolean(parentId),
           parentId,
@@ -246,7 +246,7 @@ function parseEmotionItem(rawItem, ownerUin) {
     },
     sourceMeta: {
       adapter: "emotion_cgi_msglist_v6",
-      parserVersion: 6,
+      parserVersion: 7,
       authorNickname: stripHtml(rawItem?.name || rawItem?.nickname || ""),
       sourceName: stripHtml(rawItem?.source_name || "") || null,
       isForward: Boolean(rawItem?.rt_tid || forwardedText || originalAuthorUin),
@@ -357,12 +357,12 @@ function parseComments(html) {
     return {
       id: attribute(attrs, "tid") || `${index + 1}`,
       authorUin: attribute(attrs, "uin"),
-      name,
+      authorName: name,
       text,
       isReply: attribute(attrs, "type") === "replyroot",
       source: "feeds3_html",
     };
-  }).filter((comment) => comment.text || comment.name !== "QQ 用户");
+  }).filter((comment) => comment.text || comment.authorName !== "QQ 用户");
 }
 
 function extractLikePeople(html) {
@@ -486,7 +486,7 @@ function parseFeedItem(rawItem, ownerUin) {
     metrics: { commentCount, likeCount },
     sourceMeta: {
       adapter: "feeds3_html_more",
-      parserVersion: 6,
+      parserVersion: 7,
       appid,
       typeId,
       isForward: typeId === "5" || Boolean(originalSourceId),

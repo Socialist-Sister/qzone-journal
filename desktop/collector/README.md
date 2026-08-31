@@ -1,6 +1,6 @@
 # Collector process boundary
 
-QQ Space collection will run outside the React renderer.
+QQ Space collection runs outside the React renderer.
 
 The collector host now owns:
 
@@ -9,6 +9,7 @@ The collector host now owns:
 - normalization into versioned local records;
 - media downloads and integrity checks;
 - progress events that contain counts and status only, never raw credentials.
+- a final adapter health state (`healthy`, `degraded`, or `partial`) so the UI can distinguish the primary category route, a compatibility fallback, and truncated history.
 
 The renderer may request a collection job through a narrow preload API, but it never receives cookies, passwords, or unrestricted filesystem access. The Electron main process validates every destination path and job option before starting an Electron Utility Process. The login window and collector share the same non-persistent per-account Electron session, so raw cookies do not cross the IPC boundary and are cleared after collection completes, fails, or is cancelled.
 

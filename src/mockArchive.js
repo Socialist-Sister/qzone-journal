@@ -218,12 +218,26 @@ export const demoArchive = {
 };
 
 export function getDemoStats(archive = demoArchive) {
+  if (archive?.stats) {
+    return {
+      total: Number(archive.stats.total ?? archive.stats.entries) || 0,
+      post: Number(archive.stats.post) || 0,
+      journal: Number(archive.stats.journal) || 0,
+      album: Number(archive.stats.album) || 0,
+      comments: Number(archive.stats.comments) || 0,
+      likes: Number(archive.stats.likes) || 0,
+      visibleComments: Number(archive.stats.visibleComments) || 0,
+      visibleLikes: Number(archive.stats.visibleLikes) || 0,
+    };
+  }
   const totals = archive.entries.reduce((result, entry) => {
     result.total += 1;
     result[entry.type] += 1;
-    result.comments += entry.comments.length;
-    result.likes += entry.likes.length;
+    result.comments += Math.max(entry.comments.length, Number(entry.commentCount) || 0);
+    result.likes += Math.max(entry.likes.length, Number(entry.likeCount) || 0);
+    result.visibleComments += entry.comments.length;
+    result.visibleLikes += entry.likes.length;
     return result;
-  }, { total: 0, post: 0, journal: 0, album: 0, comments: 0, likes: 0 });
+  }, { total: 0, post: 0, journal: 0, album: 0, comments: 0, likes: 0, visibleComments: 0, visibleLikes: 0 });
   return totals;
 }

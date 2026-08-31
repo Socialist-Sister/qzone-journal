@@ -51,7 +51,7 @@ app.whenReady().then(async () => {
     });
     return window.desktop.ai.generateReview({
       selection: { providerId: config.providers[0].id, model: "deepseek-v4-flash" },
-      archive: { profileName: "演示", entries: [{ id: "1", type: "post", date: "2025-01-01", text: "测试动态" }] }
+      archive: { isDemo: true, profileName: "演示", entries: [{ id: "1", type: "post", date: "2025-01-01", text: "测试动态" }] }
     });
   })()`);
 

@@ -47,6 +47,7 @@ async function run(job) {
   let incrementalMode = false;
   let stoppedAtKnownPage = false;
   let paginationTruncated = null;
+  let adapterHealth = { status: "healthy", adapter: "mood_list", message: "QQ 说说分类接口工作正常" };
 
   try {
     emit("progress", { jobId: job.jobId, progress: 5, phase: "initializing", message: "正在建立本地归档目录…" });
@@ -138,6 +139,13 @@ async function run(job) {
           throw pageError;
         }
         postAdapter = page.adapter === "feeds3_personal" ? "feeds3_personal" : "mood_list";
+        if (postAdapter === "feeds3_personal") {
+          adapterHealth = {
+            status: "degraded",
+            adapter: postAdapter,
+            message: "QQ 说说分类接口暂时不可用，本次改用仅包含本人内容的兼容读取路径",
+          };
+        }
         if (page.resumeCursorReset) {
           await store.writeDiagnostic("resume-cursor-reset", {
             reason: "saved_cursor_rejected",
@@ -198,6 +206,7 @@ async function run(job) {
           pageChanges[inspection.change] += 1;
           processedEntries += 1;
         }
+        await store.flushIndexes();
         counts = await store.summarize();
         const nextCursor = String(page.cursor || "");
         const reachedKnownPage = incrementalMode
@@ -239,6 +248,7 @@ async function run(job) {
     emit("progress", { jobId: job.jobId, progress: 96, phase: "archive_ready", message: "正在写入归档清单与本地索引…" });
     throwIfCancelled();
     if (parserMigration) counts = await store.mergeParserMigrationPrevious(parserMigration);
+    await store.flushIndexes();
     counts = await store.summarize();
     await store.complete({
       jobId: job.jobId,
@@ -260,6 +270,9 @@ async function run(job) {
       changes,
       mode: paginationTruncated ? "partial" : stoppedAtKnownPage ? "incremental" : "full",
       truncated: Boolean(paginationTruncated),
+      adapterHealth: paginationTruncated
+        ? { status: "partial", adapter: postAdapter, message: "QQ 未继续返回更早内容，已保存恢复点，可稍后继续" }
+        : adapterHealth,
       schemaVersion: 1,
       phase: paginationTruncated ? "collection_partial" : "collection_complete",
       message: paginationTruncated
@@ -269,6 +282,7 @@ async function run(job) {
   } catch (error) {
     const cancelled = activeAbortController?.signal.aborted;
     try {
+      await store.flushIndexes();
       if (parserMigration) {
         const restored = await store.rollbackParserMigration(parserMigration, {
           reason: cancelled ? "collection_cancelled" : "collection_failed",

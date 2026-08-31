@@ -103,6 +103,113 @@ test("archive store classifies incremental changes, preserves revisions, and rec
   assert.equal(manifest.collection.deletionPolicy, "retain_unseen");
 });
 
+test("entry index separates official interaction totals, paginates records, and batches media index writes", async (context) => {
+  const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), "qzone-journal-index-"));
+  context.after(() => fs.rm(rootPath, { recursive: true, force: true }));
+  const store = new ArchiveStore(rootPath);
+  const options = sanitizeCollectionOptions({ items: ["posts", "comments", "likes"] });
+  await store.initialize({ ownerUin: "12345678", jobId: "index-job", options });
+  await store.writeEntry({
+    sourceId: "post-new",
+    type: "post",
+    createdAt: "2026-08-30T00:00:00.000Z",
+    text: "可以搜索的最新说说",
+    media: [],
+    comments: [{ authorUin: "90001", name: "旧字段作者", text: "可见评论" }],
+    likes: [{ uin: "90002", name: "可见点赞者" }],
+    metrics: { commentCount: 6, likeCount: 9 },
+    sourceMeta: { adapter: "test", parserVersion: 7, originalAuthorUin: "90003" },
+  });
+  await store.writeEntry({
+    sourceId: "post-old",
+    type: "post",
+    createdAt: "2025-08-30T00:00:00.000Z",
+    text: "较早说说",
+    media: [],
+    comments: [],
+    likes: [],
+    metrics: { commentCount: 1, likeCount: 2 },
+  });
+  await store.writeEntry({
+    sourceId: "journal-1",
+    type: "journal",
+    createdAt: "2024-08-30T00:00:00.000Z",
+    title: "旧日志",
+    text: "日志正文",
+    media: [],
+  });
+
+  const summary = await store.summarize();
+  assert.deepEqual(summary, {
+    entries: 3,
+    media: 0,
+    mediaBytes: 0,
+    comments: 7,
+    likes: 11,
+    visibleComments: 1,
+    visibleLikes: 1,
+  });
+  const firstPage = await store.readEntriesPage({ limit: 2, type: "post" });
+  assert.deepEqual(firstPage.entries.map((entry) => entry.sourceId), ["post-new", "post-old"]);
+  assert.equal(firstPage.page.total, 2);
+  assert.equal(firstPage.page.hasMore, false);
+  assert.equal(firstPage.entries[0].comments[0].authorName, "旧字段作者");
+  assert.equal("name" in firstPage.entries[0].comments[0], false);
+  assert.equal("authorUin" in firstPage.entries[0].comments[0], false);
+  assert.equal("uin" in firstPage.entries[0].likes[0], false);
+  assert.equal("originalAuthorUin" in firstPage.entries[0].sourceMeta, false);
+  const searchPage = await store.readEntriesPage({ query: "最新", limit: 1 });
+  assert.deepEqual(searchPage.entries.map((entry) => entry.sourceId), ["post-new"]);
+  assert.deepEqual(searchPage.range, { firstYear: 2024, lastYear: 2026 });
+
+  await store.writeMedia({
+    sourceUrl: "https://example.invalid/batched.png",
+    finalUrl: "https://example.invalid/batched.png",
+    contentType: "image/png",
+    bytes: Buffer.from([1, 2, 3]),
+  });
+  assert.equal(await readJson(path.join(rootPath, "media", "index.json"), null), null);
+  await store.flushIndexes();
+  const mediaIndex = await readJson(path.join(rootPath, "media", "index.json"));
+  assert.equal(Object.keys(mediaIndex.items).length, 1);
+});
+
+test("an interrupted batch rebuilds the entry index before serving pages", async (context) => {
+  const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), "qzone-journal-index-recovery-"));
+  context.after(() => fs.rm(rootPath, { recursive: true, force: true }));
+  const store = new ArchiveStore(rootPath);
+  await store.initialize({
+    ownerUin: "12345678",
+    jobId: "index-recovery-job",
+    options: sanitizeCollectionOptions({ items: ["posts"] }),
+  });
+  await store.writeEntry({
+    sourceId: "post-recovery",
+    type: "post",
+    createdAt: "2026-08-30T00:00:00.000Z",
+    text: "写入前",
+    media: [],
+    comments: [],
+    likes: [],
+    metrics: { commentCount: 1, likeCount: 2 },
+  });
+  await store.flushIndexes();
+
+  const entriesDirectory = path.join(rootPath, "records", "entries");
+  const [fileName] = (await fs.readdir(entriesDirectory)).filter((name) => name.endsWith(".json"));
+  const filePath = path.join(entriesDirectory, fileName);
+  const changedEntry = await readJson(filePath);
+  changedEntry.text = "中断后可搜索";
+  changedEntry.metrics.commentCount = 8;
+  await fs.writeFile(path.join(rootPath, "state", "entry-index.dirty.json"), "{}\n", "utf8");
+  await fs.writeFile(filePath, `${JSON.stringify(changedEntry, null, 2)}\n`, "utf8");
+
+  const recovered = await new ArchiveStore(rootPath).readEntriesPage({ query: "中断后可搜索" });
+  assert.deepEqual(recovered.entries.map((entry) => entry.sourceId), ["post-recovery"]);
+  assert.equal(recovered.stats.comments, 8);
+  await assert.rejects(fs.access(path.join(rootPath, "state", "entry-index.dirty.json")), { code: "ENOENT" });
+});
+
 test("archive integrity repair quarantines malformed records and marks missing media for redownload", async (context) => {
   const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), "qzone-journal-integrity-"));
   context.after(() => fs.rm(rootPath, { recursive: true, force: true }));
@@ -219,7 +326,7 @@ test("successful parser migration keeps the old records in diagnostics and commi
   const committedManifest = await readJson(manifestPath);
   const entries = await store.readEntries();
   const previousDirectory = path.join(rootPath, ...transaction.quarantineRelativePath.split("/"), "previous");
-  assert.equal(committedManifest.collection.parserVersion, 6);
+  assert.equal(committedManifest.collection.parserVersion, 7);
   assert.deepEqual(entries.map((entry) => entry.text).sort(), ["新解析正文", "本轮未返回但必须保留"].sort());
   assert.equal((await fs.readdir(previousDirectory)).length, 2);
 });

@@ -2,8 +2,9 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { createHash, randomUUID } = require("node:crypto");
 const { ARCHIVE_SCHEMA_VERSION, createManifest, isoNow, normalizeArchiveEntry } = require("./schema.cjs");
-const COLLECTOR_PARSER_VERSION = 6;
+const COLLECTOR_PARSER_VERSION = 7;
 const PARSER_MIGRATION_STATE = "parser-migration-transaction.json";
+const ENTRY_INDEX_VERSION = 1;
 
 async function listJsonNames(directory) {
   try {
@@ -64,7 +65,7 @@ function entryContentFingerprint(entry) {
       type: String(item?.type || item?.contentType || ""),
     })),
     comments: (Array.isArray(entry?.comments) ? entry.comments : []).map((item) => ({
-      name: String(item?.name || item?.author || ""),
+      authorName: String(item?.authorName || item?.author || item?.name || ""),
       text: String(item?.text || item?.content || ""),
     })),
     likes: (Array.isArray(entry?.likes) ? entry.likes : []).map((item) => ({
@@ -93,10 +94,82 @@ function extensionForMedia(contentType, sourceUrl) {
   }
 }
 
+function emptyIndexTotals() {
+  return {
+    entries: 0,
+    post: 0,
+    journal: 0,
+    album: 0,
+    media: 0,
+    mediaBytes: 0,
+    comments: 0,
+    likes: 0,
+    visibleComments: 0,
+    visibleLikes: 0,
+  };
+}
+
+function officialMetric(value, visibleCount) {
+  return Math.max(Math.max(0, Number(value) || 0), visibleCount);
+}
+
+function entryIndexItem(entry, fileName) {
+  const comments = Array.isArray(entry?.comments) ? entry.comments : [];
+  const likes = Array.isArray(entry?.likes) ? entry.likes : [];
+  const media = Array.isArray(entry?.media) ? entry.media.filter((item) => item?.localPath) : [];
+  const searchable = [
+    entry?.title,
+    entry?.text,
+    entry?.location,
+    ...(Array.isArray(entry?.links) ? entry.links.map((link) => link?.label) : []),
+  ].filter(Boolean).join(" ").toLocaleLowerCase("zh-CN").slice(0, 24000);
+  return {
+    fileName,
+    sourceId: String(entry?.sourceId || ""),
+    type: String(entry?.type || "post"),
+    createdAt: String(entry?.createdAt || ""),
+    searchText: searchable,
+    media: media.length,
+    mediaBytes: media.reduce((total, item) => total + (Number(item?.size) || 0), 0),
+    comments: officialMetric(entry?.metrics?.commentCount, comments.length),
+    likes: officialMetric(entry?.metrics?.likeCount, likes.length),
+    visibleComments: comments.length,
+    visibleLikes: likes.length,
+  };
+}
+
+function applyIndexItem(totals, item, direction = 1) {
+  totals.entries += direction;
+  if (["post", "journal", "album"].includes(item.type)) totals[item.type] += direction;
+  for (const key of ["media", "mediaBytes", "comments", "likes", "visibleComments", "visibleLikes"]) {
+    totals[key] += direction * (Number(item[key]) || 0);
+  }
+}
+
+async function mapWithConcurrency(items, limit, mapper) {
+  const results = new Array(items.length);
+  let cursor = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (cursor < items.length) {
+      const index = cursor;
+      cursor += 1;
+      results[index] = await mapper(items[index], index);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
 class ArchiveStore {
   constructor(rootPath) {
     this.rootPath = path.resolve(rootPath);
     this.manifestPath = path.join(this.rootPath, "manifest.json");
+    this.mediaIndex = null;
+    this.mediaIndexPromise = null;
+    this.mediaIndexDirty = false;
+    this.entryIndex = null;
+    this.entryIndexPromise = null;
+    this.entryIndexDirty = false;
   }
 
   async initialize({ ownerUin, jobId, options }) {
@@ -138,8 +211,120 @@ class ArchiveStore {
       counts: existingCheckpoint?.counts || existing?.collection?.counts || {},
       updatedAt: isoNow(),
     });
-    await atomicWriteJson(mediaIndexPath, existingMediaIndex);
+    this.mediaIndex = existingMediaIndex;
+    this.mediaIndexPromise = Promise.resolve(existingMediaIndex);
+    await this.loadEntryIndex({ verify: true });
     return { manifest, migrationRequired, previousParserVersion };
+  }
+
+  entryIndexPath() {
+    return path.join(this.rootPath, "state", "entry-index.json");
+  }
+
+  entryIndexDirtyPath() {
+    return path.join(this.rootPath, "state", "entry-index.dirty.json");
+  }
+
+  async markEntryIndexDirty() {
+    if (this.entryIndexDirty) return;
+    await atomicWriteJson(this.entryIndexDirtyPath(), { version: ENTRY_INDEX_VERSION, markedAt: isoNow() });
+    this.entryIndexDirty = true;
+  }
+
+  async loadMediaIndex() {
+    if (this.mediaIndex) return this.mediaIndex;
+    if (!this.mediaIndexPromise) {
+      this.mediaIndexPromise = readJson(path.join(this.rootPath, "media", "index.json"), {
+        schemaVersion: ARCHIVE_SCHEMA_VERSION,
+        items: {},
+      }).then((index) => {
+        this.mediaIndex = index && typeof index.items === "object"
+          ? index
+          : { schemaVersion: ARCHIVE_SCHEMA_VERSION, items: {} };
+        return this.mediaIndex;
+      });
+    }
+    return this.mediaIndexPromise;
+  }
+
+  async loadEntryIndex({ verify = false } = {}) {
+    if (!this.entryIndexPromise) {
+      this.entryIndexPromise = readJson(this.entryIndexPath(), null).then((index) => {
+        this.entryIndex = index?.version === ENTRY_INDEX_VERSION && index.items && typeof index.items === "object"
+          ? index
+          : null;
+        return this.entryIndex;
+      });
+    }
+    let index = await this.entryIndexPromise;
+    if (!index) return this.rebuildEntryIndex();
+    if (verify) {
+      const interruptedWrite = await fileExists(this.entryIndexDirtyPath());
+      const names = await listJsonNames(path.join(this.rootPath, "records", "entries"));
+      const indexedNames = Object.keys(index.items);
+      if (interruptedWrite || names.length !== indexedNames.length || names.some((name) => !index.items[name])) {
+        index = await this.rebuildEntryIndex();
+      }
+    }
+    return index;
+  }
+
+  async rebuildEntryIndex() {
+    const directory = path.join(this.rootPath, "records", "entries");
+    const names = await listJsonNames(directory);
+    const records = await mapWithConcurrency(names, 48, async (name) => {
+      try {
+        const entry = await readJson(path.join(directory, name));
+        return entry ? [name, entryIndexItem(entry, name)] : null;
+      } catch {
+        return null;
+      }
+    });
+    const index = {
+      version: ENTRY_INDEX_VERSION,
+      generatedAt: isoNow(),
+      totals: emptyIndexTotals(),
+      items: {},
+    };
+    for (const record of records.filter(Boolean)) {
+      index.items[record[0]] = record[1];
+      applyIndexItem(index.totals, record[1]);
+    }
+    this.entryIndex = index;
+    this.entryIndexPromise = Promise.resolve(index);
+    this.entryIndexDirty = true;
+    await this.flushEntryIndex();
+    return index;
+  }
+
+  async updateEntryIndex(entry, filePath) {
+    const index = await this.loadEntryIndex();
+    const fileName = path.basename(filePath);
+    const previous = index.items[fileName];
+    if (previous) applyIndexItem(index.totals, previous, -1);
+    const next = entryIndexItem(entry, fileName);
+    index.items[fileName] = next;
+    applyIndexItem(index.totals, next);
+    index.generatedAt = isoNow();
+    this.entryIndexDirty = true;
+    return next;
+  }
+
+  async flushEntryIndex() {
+    if (!this.entryIndexDirty || !this.entryIndex) return;
+    await atomicWriteJson(this.entryIndexPath(), this.entryIndex);
+    await fs.rm(this.entryIndexDirtyPath(), { force: true });
+    this.entryIndexDirty = false;
+  }
+
+  async flushMediaIndex() {
+    if (!this.mediaIndexDirty || !this.mediaIndex) return;
+    await atomicWriteJson(path.join(this.rootPath, "media", "index.json"), this.mediaIndex);
+    this.mediaIndexDirty = false;
+  }
+
+  async flushIndexes() {
+    await Promise.all([this.flushEntryIndex(), this.flushMediaIndex()]);
   }
 
   async readParserMigrationState() {
@@ -214,6 +399,15 @@ class ArchiveStore {
         cursors: {},
         counts: manifest.collection.counts,
       });
+      this.entryIndex = {
+        version: ENTRY_INDEX_VERSION,
+        generatedAt: isoNow(),
+        totals: emptyIndexTotals(),
+        items: {},
+      };
+      this.entryIndexPromise = Promise.resolve(this.entryIndex);
+      this.entryIndexDirty = true;
+      await this.flushEntryIndex();
       return transaction;
     } catch (error) {
       await this.rollbackParserMigration(transaction, { reason: "migration_setup_failed" }).catch(() => undefined);
@@ -245,6 +439,7 @@ class ArchiveStore {
       await fs.rename(path.join(previousDirectory, name), target);
     }
 
+    await this.rebuildEntryIndex();
     const restoredCounts = await this.summarize();
     const manifest = await readJson(this.manifestPath);
     if (manifest && transaction.previousCollection) {
@@ -303,6 +498,7 @@ class ArchiveStore {
       const target = path.join(entriesDirectory, name);
       if (!(await fileExists(target))) await fs.copyFile(path.join(previousDirectory, name), target);
     }
+    await this.rebuildEntryIndex();
     return this.summarize();
   }
 
@@ -351,7 +547,9 @@ class ArchiveStore {
       const revisionName = isoNow().replace(/[:.]/g, "-") + ".json";
       await atomicWriteJson(path.join(revisionDirectory, revisionName), existing);
     }
+    await this.markEntryIndexDirty();
     await atomicWriteJson(filePath, entry);
+    await this.updateEntryIndex(entry, filePath);
     return { entry, filePath, change: !existing ? "added" : "updated" };
   }
 
@@ -368,8 +566,7 @@ class ArchiveStore {
       await fs.writeFile(temporaryPath, bytes, { mode: 0o600 });
       await fs.rename(temporaryPath, filePath);
     }
-    const indexPath = path.join(this.rootPath, "media", "index.json");
-    const index = await readJson(indexPath, { schemaVersion: ARCHIVE_SCHEMA_VERSION, items: {} });
+    const index = await this.loadMediaIndex();
     index.items[id] = {
       sourceUrl: String(sourceUrl),
       finalUrl: String(finalUrl || sourceUrl),
@@ -378,13 +575,13 @@ class ArchiveStore {
       size: bytes.length,
       storedAt: isoNow(),
     };
-    await atomicWriteJson(indexPath, index);
+    this.mediaIndexDirty = true;
     return index.items[id];
   }
 
   async getStoredMedia(sourceUrl) {
     const id = createHash("sha256").update(String(sourceUrl)).digest("hex");
-    const index = await readJson(path.join(this.rootPath, "media", "index.json"), { items: {} });
+    const index = await this.loadMediaIndex();
     const item = index?.items?.[id];
     if (!item?.relativePath) return null;
     try {
@@ -411,18 +608,52 @@ class ArchiveStore {
     return entries.filter(Boolean);
   }
 
+  async readEntriesPage({ cursor = 0, limit = 100, query = "", type = "all" } = {}) {
+    const index = await this.loadEntryIndex({ verify: true });
+    const normalizedType = ["post", "journal", "album"].includes(type) ? type : "all";
+    const keyword = String(query || "").trim().toLocaleLowerCase("zh-CN").slice(0, 200);
+    const offset = Math.max(0, Number.parseInt(String(cursor || "0"), 10) || 0);
+    const pageSize = Math.min(300, Math.max(1, Number.parseInt(String(limit || "100"), 10) || 100));
+    const allItems = Object.values(index.items);
+    const matching = allItems
+      .filter((item) => (normalizedType === "all" || item.type === normalizedType) && (!keyword || item.searchText.includes(keyword)))
+      .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)) || String(a.sourceId).localeCompare(String(b.sourceId)));
+    const selected = matching.slice(offset, offset + pageSize);
+    const directory = path.join(this.rootPath, "records", "entries");
+    const entries = (await Promise.all(selected.map(async (item) => {
+      try {
+        return await readJson(path.join(directory, item.fileName));
+      } catch {
+        return null;
+      }
+    }))).filter(Boolean);
+    const nextOffset = offset + selected.length;
+    const years = allItems.map((item) => Number(String(item.createdAt).slice(0, 4))).filter(Number.isFinite);
+    return {
+      entries,
+      stats: { ...index.totals, total: index.totals.entries },
+      range: years.length ? { firstYear: Math.min(...years), lastYear: Math.max(...years) } : null,
+      page: {
+        cursor: String(offset),
+        nextCursor: nextOffset < matching.length ? String(nextOffset) : null,
+        hasMore: nextOffset < matching.length,
+        total: matching.length,
+        limit: pageSize,
+      },
+    };
+  }
+
   async summarize() {
-    const entries = await this.readEntries();
-    return entries.reduce((counts, entry) => {
-      counts.entries += 1;
-      counts.media += Array.isArray(entry.media) ? entry.media.filter((item) => item.localPath).length : 0;
-      counts.mediaBytes += Array.isArray(entry.media)
-        ? entry.media.reduce((total, item) => total + (item.localPath ? Number(item.size) || 0 : 0), 0)
-        : 0;
-      counts.comments += Array.isArray(entry.comments) ? entry.comments.length : 0;
-      counts.likes += Array.isArray(entry.likes) ? entry.likes.length : 0;
-      return counts;
-    }, { entries: 0, media: 0, mediaBytes: 0, comments: 0, likes: 0 });
+    const totals = (await this.loadEntryIndex()).totals;
+    return {
+      entries: totals.entries,
+      media: totals.media,
+      mediaBytes: totals.mediaBytes,
+      comments: totals.comments,
+      likes: totals.likes,
+      visibleComments: totals.visibleComments,
+      visibleLikes: totals.visibleLikes,
+    };
   }
 
   async checkIntegrity() {
@@ -497,6 +728,7 @@ class ArchiveStore {
       repairedEntries += 1;
     }
 
+    await this.rebuildEntryIndex();
     const counts = await this.summarize();
     const manifest = await readJson(this.manifestPath);
     if (manifest) {
@@ -525,7 +757,7 @@ class ArchiveStore {
   }
 
   async buildPostsHighWater() {
-    const entries = (await this.readEntries())
+    const entries = Object.values((await this.loadEntryIndex()).items)
       .filter((entry) => entry.type === "post" && entry.sourceId)
       .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
     return {
@@ -578,6 +810,7 @@ class ArchiveStore {
       },
       deletionPolicy: "retain_unseen",
     };
+    await this.flushIndexes();
     await atomicWriteJson(this.manifestPath, manifest);
     await this.writeCheckpoint({ jobId, phase: status, cursors, counts: counts || manifest.collection.counts });
     return manifest;
