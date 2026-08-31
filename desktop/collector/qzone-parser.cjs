@@ -211,6 +211,66 @@ function emotionLikes(rawItem) {
   return [...people.values()];
 }
 
+function firstReportedCount(...values) {
+  for (const value of values) {
+    if (value === "" || value === null || value === undefined) continue;
+    const count = Number(value);
+    if (Number.isFinite(count) && count >= 0) return { count, reported: true };
+  }
+  return { count: 0, reported: false };
+}
+
+function parseLikeListPage(text, { count = 60 } = {}) {
+  const payload = parseJsonp(text);
+  const code = Number(payload?.code ?? payload?.ret ?? 0);
+  if (code !== 0) {
+    const message = String(payload?.message || payload?.msg || "QQ 点赞名单接口返回失败");
+    const error = new Error(isAuthenticationFailure(code)
+      ? "QQ 登录会话已失效，请重新扫码登录"
+      : [-10000, -2].includes(code)
+        ? "QQ 点赞名单接口请求过于频繁，已保存进度"
+        : "QQ 点赞名单接口错误 " + code + "：" + message);
+    error.code = isAuthenticationFailure(code) ? code : [-10000, -2].includes(code) ? "QZONE_INTERACTION_RATE_LIMITED" : code;
+    error.businessCode = code;
+    throw error;
+  }
+  const data = payload?.data && typeof payload.data === "object" ? payload.data : payload;
+  const candidates = [data?.like_uin_info, data?.likelist, data?.items, data?.list]
+    .find(Array.isArray) || [];
+  const people = new Map();
+  for (const item of candidates.slice(0, 3000)) {
+    if (!item || typeof item !== "object") continue;
+    const uin = String(item.fuin || item.uin || item.user_uin || "");
+    const name = stripHtml(item.nick || item.nickname || item.name || "");
+    if (!name) continue;
+    const key = uin || "name:" + name;
+    if (!people.has(key)) people.set(key, { uin, name, source: "qzone_like_list" });
+  }
+  const totalResult = firstReportedCount(
+    data?.total_number,
+    data?.total,
+    data?.like_count,
+    data?.count,
+    payload?.total_number,
+    payload?.total,
+  );
+  const explicitMore = data?.has_more ?? data?.hasmore ?? data?.is_more;
+  const lastPerson = candidates.at(-1);
+  const nextCursor = String(data?.next_uin || data?.last_uin || lastPerson?.fuin || lastPerson?.uin || "");
+  const pageSize = Math.max(1, Number(count) || 60);
+  const hasMore = explicitMore == null
+    ? totalResult.reported
+      ? people.size > 0 && people.size < totalResult.count && candidates.length >= pageSize
+      : candidates.length >= pageSize
+    : truthyMore(explicitMore);
+  return {
+    likes: [...people.values()],
+    total: Math.max(people.size, totalResult.count),
+    hasMore: Boolean(hasMore && nextCursor),
+    nextCursor,
+  };
+}
+
 function parseEmotionItem(rawItem, ownerUin) {
   const authorUin = String(rawItem?.uin || rawItem?.opuin || "");
   if (ownerUin && authorUin && authorUin !== String(ownerUin)) return null;
@@ -226,6 +286,8 @@ function parseEmotionItem(rawItem, ownerUin) {
   if (!text && !media.length && !links.length) return null;
   const comments = emotionComments(rawItem);
   const likes = emotionLikes(rawItem);
+  const commentMetric = firstReportedCount(rawItem?.cmtnum, rawItem?.commentnum, rawItem?.comment_count);
+  const likeMetric = firstReportedCount(rawItem?.likenum, rawItem?.likecount, rawItem?.like_count, rawItem?.praiseCount);
   const createdSeconds = Number(rawItem?.created_time || rawItem?.createTime?.time || rawItem?.create_time || 0);
   const originalAuthorUin = String(rawItem?.rt_uin || rawItem?.rt_con?.uin || "");
   return {
@@ -240,8 +302,8 @@ function parseEmotionItem(rawItem, ownerUin) {
     comments,
     likes,
     metrics: {
-      commentCount: Number(rawItem?.cmtnum || rawItem?.commentnum || comments.length) || 0,
-      likeCount: Number(rawItem?.likenum || rawItem?.likecount || likes.length) || 0,
+      commentCount: Math.max(comments.length, commentMetric.count),
+      likeCount: Math.max(likes.length, likeMetric.count),
       forwardCount: Number(rawItem?.fwdnum || rawItem?.forwardnum || 0) || 0,
     },
     sourceMeta: {
@@ -249,6 +311,8 @@ function parseEmotionItem(rawItem, ownerUin) {
       parserVersion: 7,
       authorNickname: stripHtml(rawItem?.name || rawItem?.nickname || ""),
       sourceName: stripHtml(rawItem?.source_name || "") || null,
+      commentCountReported: commentMetric.reported,
+      likeCountReported: likeMetric.reported,
       isForward: Boolean(rawItem?.rt_tid || forwardedText || originalAuthorUin),
       originalSourceId: rawItem?.rt_tid ? String(rawItem.rt_tid) : null,
       originalAuthorUin: originalAuthorUin && originalAuthorUin !== authorUin ? originalAuthorUin : null,
@@ -614,6 +678,7 @@ module.exports = {
   parseFeedItem,
   parseFeeds3Page,
   parseJsonp,
+  parseLikeListPage,
   parseMoodListPage,
   parseRawFeeds3Page,
   stripHtml,

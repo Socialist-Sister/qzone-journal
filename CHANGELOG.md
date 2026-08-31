@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.6.0-alpha] - 2026-08-31
+
+### 点赞名单补充采集
+
+- 勾选“点赞记录”后，在正文采集完成后通过独立的本人说说点赞名单接口逐条补充可见点赞者；请求按顺序执行并加入间隔，避免并发触发 QQ 限制。
+- 每补充一条就原子写入档案和恢复点；会话失效、限流或接口异常时保留已完成结果，下次备份从恢复点继续，不回退正文和已有互动数据。
+- 点赞总数与当前可见名单继续分开保存；档案只记录昵称，不保存点赞者 QQ 号，并在 QQ 未返回完整名单时明确提示。
+
+### 互动详情排版
+
+- 详情页直接展示已取得的点赞者昵称，不再只有人数而缺少人员信息。
+- 评论昵称限制为单行省略，正文紧随昵称自然换行，避免长昵称形成狭窄的多行列；整体仍沿用暖纸张档案样式。
+- 新增点赞接口解析、分页、限流、恢复点和真实 Electron 互动详情回归。
+
 ## [0.5.0-alpha] - 2026-08-31
 
 ### 归档准确性
@@ -173,6 +187,7 @@
 - QQ 非公开接口可能随服务端变化。
 - 安装包尚未进行代码签名。
 
+[0.6.0-alpha]: https://github.com/Socialist-Sister/qzone-journal/releases/tag/v0.6.0-alpha
 [0.5.0-alpha]: https://github.com/Socialist-Sister/qzone-journal/releases/tag/v0.5.0-alpha
 [0.4.0-alpha]: https://github.com/Socialist-Sister/qzone-journal/releases/tag/v0.4.0-alpha
 [0.3.4-alpha]: https://github.com/Socialist-Sister/qzone-journal/releases/tag/v0.3.4-alpha

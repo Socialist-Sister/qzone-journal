@@ -1,5 +1,5 @@
 const { net } = require("electron");
-const { enrichFeeds3Cursor, isAuthenticationFailure, normalizeMediaUrl, parseFeeds3Page, parseMoodListPage } = require("./qzone-parser.cjs");
+const { enrichFeeds3Cursor, isAuthenticationFailure, normalizeMediaUrl, parseFeeds3Page, parseLikeListPage, parseMoodListPage } = require("./qzone-parser.cjs");
 
 const QZONE_USER_URL = (uin) => `https://user.qzone.qq.com/${encodeURIComponent(uin)}`;
 const FEEDS3_URL = "https://user.qzone.qq.com/proxy/domain/ic2.qzone.qq.com/cgi-bin/feeds/feeds3_html_more";
@@ -9,6 +9,11 @@ const MOOD_LIST_URLS = [
   "https://user.qzone.qq.com/proxy/domain/taotao.qq.com/cgi-bin/emotion_cgi_msglist_v6",
 ];
 const MOOD_PAGE_SIZE = 20;
+const LIKE_LIST_PAGE_SIZE = 60;
+const LIKE_LIST_URLS = [
+  "https://user.qzone.qq.com/proxy/domain/users.qzone.qq.com/cgi-bin/likes/get_like_list_app",
+  "https://users.qzone.qq.com/cgi-bin/likes/get_like_list_app",
+];
 
 function abortableDelay(milliseconds, signal) {
   return new Promise((resolve, reject) => {
@@ -80,6 +85,93 @@ function buildMoodListUrl({ uin, gTk, cursor = "", count = MOOD_PAGE_SIZE, endpo
     _t: String(Date.now()),
   });
   return `${endpoint}?${params}`;
+}
+
+function buildLikeListUrl({ uin, tid, gTk, beginUin = "0", count = LIKE_LIST_PAGE_SIZE, endpoint = LIKE_LIST_URLS[0] }) {
+  const params = new URLSearchParams({
+    uin: String(uin),
+    unikey: `http://user.qzone.qq.com/${uin}/mood/${tid}`,
+    begin_uin: String(beginUin || "0"),
+    query_count: String(Math.min(60, Math.max(1, Number(count) || LIKE_LIST_PAGE_SIZE))),
+    if_first_page: String(beginUin && String(beginUin) !== "0" ? 0 : 1),
+    g_tk: String(gTk),
+    format: "json",
+    _t: String(Date.now()),
+  });
+  return `${endpoint}?${params}`;
+}
+
+async function fetchLikeListPageOnce({ uin, tid, gTk, beginUin = "0", count = LIKE_LIST_PAGE_SIZE, signal }, dependencies = {}) {
+  const fetchRequest = dependencies.fetch || net.fetch;
+  let lastError;
+  for (const endpoint of LIKE_LIST_URLS) {
+    const url = buildLikeListUrl({ uin, tid, gTk, beginUin, count, endpoint });
+    try {
+      const response = await fetchRequest(url, {
+        method: "GET",
+        credentials: "include",
+        redirect: "follow",
+        signal,
+        headers: {
+          accept: "application/json, text/javascript, */*; q=0.01",
+          "accept-language": "zh-CN,zh;q=0.9",
+          referer: `${QZONE_USER_URL(uin)}/mood/${encodeURIComponent(tid)}`,
+          "x-requested-with": "XMLHttpRequest",
+        },
+      });
+      if ([403, 429].includes(response.status)) {
+        const error = new Error("QQ 点赞名单接口请求过于频繁，已保存进度");
+        error.code = "QZONE_INTERACTION_RATE_LIMITED";
+        error.diagnostic = { httpStatus: response.status, finalHost: new URL(response.url || url).hostname };
+        throw error;
+      }
+      if (response.status === 401) {
+        const error = new Error("QQ 登录会话已失效，请重新扫码登录");
+        error.code = -10001;
+        throw error;
+      }
+      const body = await response.text();
+      if (!response.ok) throw new Error(`QQ 点赞名单接口请求失败（HTTP ${response.status}）`);
+      const page = parseLikeListPage(body, { count });
+      return {
+        ...page,
+        diagnostic: {
+          httpStatus: response.status,
+          finalHost: (() => { try { return new URL(response.url || url).hostname; } catch { return ""; } })(),
+          contentType: String(response.headers.get("content-type") || "").split(";", 1)[0],
+          responseBytes: Buffer.byteLength(body),
+          visibleLikes: page.likes.length,
+          total: page.total,
+          hasMore: page.hasMore,
+        },
+      };
+    } catch (error) {
+      if (signal?.aborted || isAuthenticationFailure(error?.code) || error?.code === "QZONE_INTERACTION_RATE_LIMITED") throw error;
+      lastError = error;
+    }
+  }
+  throw lastError || new Error("QQ 点赞名单接口暂时不可用");
+}
+
+async function fetchLikeList({ uin, tid, gTk, signal }, dependencies = {}) {
+  const delay = dependencies.delay || abortableDelay;
+  const people = new Map();
+  let beginUin = "0";
+  let total = 0;
+  const diagnostics = [];
+  for (let pageNumber = 1; pageNumber <= 50; pageNumber += 1) {
+    const page = await fetchLikeListPageOnce({ uin, tid, gTk, beginUin, signal }, dependencies);
+    diagnostics.push({ pageNumber, ...page.diagnostic });
+    for (const person of page.likes) {
+      const key = person.uin || `name:${person.name}`;
+      if (!people.has(key)) people.set(key, person);
+    }
+    total = Math.max(total, Number(page.total) || 0, people.size);
+    if (!page.hasMore || !page.nextCursor || page.nextCursor === beginUin) break;
+    beginUin = page.nextCursor;
+    await delay(900 + Math.floor(Math.random() * 400), signal);
+  }
+  return { likes: [...people.values()].slice(0, 3000), total, diagnostics };
 }
 
 async function fetchMoodPageOnce({ uin, gTk, cursor = "", count = FEEDS3_PAGE_SIZE, signal, scope = 1 }, dependencies = {}) {
@@ -311,4 +403,4 @@ function createCollectionPlan(options) {
   }));
 }
 
-module.exports = { FEEDS3_PAGE_SIZE, MOOD_PAGE_SIZE, abortableDelay, buildFeeds3Url, buildMoodListUrl, createCollectionPlan, downloadMedia, fetchMoodCategoryPageOnce, fetchMoodPage, fetchMoodPageOnce, probeSession };
+module.exports = { FEEDS3_PAGE_SIZE, LIKE_LIST_PAGE_SIZE, MOOD_PAGE_SIZE, abortableDelay, buildFeeds3Url, buildLikeListUrl, buildMoodListUrl, createCollectionPlan, downloadMedia, fetchLikeList, fetchLikeListPageOnce, fetchMoodCategoryPageOnce, fetchMoodPage, fetchMoodPageOnce, probeSession };

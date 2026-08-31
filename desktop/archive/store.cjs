@@ -508,8 +508,19 @@ class ArchiveStore {
     const existing = await readJson(filePath);
     const mergedInput = {
       ...input,
-      comments: options.includeComments === false ? existing?.comments || [] : input?.comments,
-      likes: options.includeLikes === false ? existing?.likes || [] : input?.likes,
+      sourceMeta: { ...(existing?.sourceMeta || {}), ...(input?.sourceMeta || {}) },
+      metrics: {
+        ...(existing?.metrics || {}),
+        ...(input?.metrics || {}),
+        commentCount: options.includeComments === false
+          ? Math.max(Number(existing?.metrics?.commentCount) || 0, Number(input?.metrics?.commentCount) || 0)
+          : Number(input?.metrics?.commentCount) || 0,
+        likeCount: options.includeLikes === false
+          ? Math.max(Number(existing?.metrics?.likeCount) || 0, Number(input?.metrics?.likeCount) || 0)
+          : Number(input?.metrics?.likeCount) || 0,
+      },
+      comments: options.includeComments === false ? existing?.comments || input?.comments || [] : input?.comments,
+      likes: options.includeLikes === false ? existing?.likes || input?.likes || [] : input?.likes,
       media: options.includeMedia === false ? existing?.media || input?.media : input?.media,
     };
     const entry = normalizeArchiveEntry(mergedInput);

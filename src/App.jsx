@@ -872,13 +872,17 @@ function ArchiveView({ archive, onStart, onImportDemo, onReadPage }) {
               {selectedEntry.location && <p className="detail-location"><MapPin size={16} />{selectedEntry.location}</p>}
               <div className="detail-section">
                 <strong><Heart size={17} />{Math.max(selectedEntry.likes.length, Number(selectedEntry.likeCount) || 0)} 人点赞</strong>
-                <p>{selectedEntry.likes.length ? <ArchiveText text={selectedEntry.likes.join("、")} /> : "QQ 本次没有返回可见的点赞者名单。"}</p>
+                {selectedEntry.likes.length ? (
+                  <p className="detail-like-list">{selectedEntry.likes.map((name, index) => (
+                    <span key={`${selectedEntry.id}-like-${index}`}><ArchiveText text={name} />{index < selectedEntry.likes.length - 1 ? "、" : ""}</span>
+                  ))}</p>
+                ) : <p className="detail-empty-interaction">QQ 本次没有返回可见的点赞者名单。</p>}
                 {Number(selectedEntry.likeCount) > selectedEntry.likes.length && <small className="detail-expansion-note">已保存 {selectedEntry.likes.length} 位当前可见点赞者，名单可能不完整。</small>}
               </div>
               <div className="detail-section">
                 <strong><ChatsCircle size={17} />评论 {Math.max(selectedEntry.comments.length, Number(selectedEntry.commentCount) || 0)}</strong>
                 {selectedEntry.comments.length ? selectedEntry.comments.map((comment, index) => (
-                  <p className="detail-comment" key={`${selectedEntry.id}-${index}`}><b><ArchiveText text={comment.authorName || comment.name || "QQ 用户"} /></b><span><ArchiveText text={comment.text} /></span></p>
+                  <p className="detail-comment" key={`${selectedEntry.id}-${index}`}><b title={comment.authorName || comment.name || "QQ 用户"}><ArchiveText text={comment.authorName || comment.name || "QQ 用户"} /></b><span className="detail-comment-separator">：</span><span className="detail-comment-text"><ArchiveText text={comment.text} /></span></p>
                 )) : <p>这条内容还没有评论。</p>}
                 {Number(selectedEntry.commentCount) > selectedEntry.comments.length && <small className="detail-expansion-note">已保存 {selectedEntry.comments.length} 条当前可见评论，详情可能不完整。</small>}
               </div>
@@ -1926,7 +1930,7 @@ function BackupDialog({ onClose, onComplete, onAccountChange }) {
             <p className="dialog-kicker">{collectionResult ? "本地备份完成" : "第一次备份完成"}</p>
             <h2 id="dialog-title">{collectionResult ? `${collectionResult.counts?.entries || 0} 条内容已归档` : `${demoTotal} 条记忆已安全回家`}</h2>
             {collectionResult
-              ? <>{collectionResult.truncated && <p className="dialog-warning"><WarningCircle size={17} weight="fill" />QQ 本次只返回了部分时间线，当前可读取内容已经保存；稍后再次备份仍会继续尝试更早内容。</p>}{collectionResult.adapterHealth?.status === "degraded" && <p className="dialog-warning"><WarningCircle size={17} weight="fill" />{collectionResult.adapterHealth.message}</p>}<p>本次新增 {collectionResult.changes?.added || 0} 条、更新 {collectionResult.changes?.updated || 0} 条、跳过 {collectionResult.changes?.skipped || 0} 条未变化内容；共保存 {collectionResult.counts?.media || 0} 张图片（{formatFileSize(collectionResult.counts?.mediaBytes)}）。QQ 报告 {collectionResult.counts?.comments || 0} 条评论、{collectionResult.counts?.likes || 0} 次点赞，其中已展开保存 {collectionResult.counts?.visibleComments || 0} 条评论和 {collectionResult.counts?.visibleLikes || 0} 位点赞者。QQ 临时会话已自动清除。</p><code className="archive-path">{collectionResult.archivePath}</code>{flowError && <p className="dialog-error" role="alert"><WarningCircle size={17} weight="fill" />{flowError}</p>}</>
+              ? <>{collectionResult.truncated && <p className="dialog-warning"><WarningCircle size={17} weight="fill" />{collectionResult.partialReason === "likes" ? "说说正文已经保存；QQ 暂未继续返回点赞名单，稍后再次备份会从已保存状态继续补充。" : "QQ 本次只返回了部分时间线，当前可读取内容已经保存；稍后再次备份仍会继续尝试更早内容。"}</p>}{collectionResult.adapterHealth?.status === "degraded" && <p className="dialog-warning"><WarningCircle size={17} weight="fill" />{collectionResult.adapterHealth.message}</p>}<p>本次新增 {collectionResult.changes?.added || 0} 条、更新 {collectionResult.changes?.updated || 0} 条、跳过 {collectionResult.changes?.skipped || 0} 条未变化内容；共保存 {collectionResult.counts?.media || 0} 张图片（{formatFileSize(collectionResult.counts?.mediaBytes)}）。QQ 报告 {collectionResult.counts?.comments || 0} 条评论、{collectionResult.counts?.likes || 0} 次点赞，其中已展开保存 {collectionResult.counts?.visibleComments || 0} 条评论和 {collectionResult.counts?.visibleLikes || 0} 位点赞者。QQ 临时会话已自动清除。</p><code className="archive-path">{collectionResult.archivePath}</code>{flowError && <p className="dialog-error" role="alert"><WarningCircle size={17} weight="fill" />{flowError}</p>}</>
               : <p>当前是演示数据。正式采集接入后，档案会保存在你选择的本地目录。</p>}
             <button className="dialog-primary" type="button" disabled={openingArchive} onClick={collectionResult ? openCollectedArchive : onComplete}>{openingArchive ? <><LoadingSpinner />正在读取档案…</> : <>{collectionResult ? "打开我的档案" : "查看我的档案"}<ArrowRight size={20} /></>}</button>
           </div>

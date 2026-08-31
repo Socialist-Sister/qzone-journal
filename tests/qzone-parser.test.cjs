@@ -1,7 +1,7 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
-const { normalizeQzoneMentions, parseFeeds3Page, parseMoodListPage } = require("../desktop/collector/qzone-parser.cjs");
-const { buildFeeds3Url, buildMoodListUrl, fetchMoodPage, fetchMoodPageOnce } = require("../desktop/collector/qzone-adapter.cjs");
+const { normalizeQzoneMentions, parseFeeds3Page, parseLikeListPage, parseMoodListPage } = require("../desktop/collector/qzone-parser.cjs");
+const { buildFeeds3Url, buildLikeListUrl, buildMoodListUrl, fetchLikeList, fetchMoodPage, fetchMoodPageOnce } = require("../desktop/collector/qzone-adapter.cjs");
 
 test("feeds3 parser normalizes a titleless post, media, comments and visible likes", () => {
   const html = `<div id="feed_12345678_311_0_1700000000_0_1">
@@ -105,6 +105,56 @@ test("mood category request uses the owner's category and numeric offset", () =>
   assert.equal(url.searchParams.get("uin"), "12345678");
   assert.equal(url.searchParams.get("pos"), "40");
   assert.equal(url.searchParams.get("num"), "20");
+});
+
+test("like-list parser keeps display names, totals and pagination without exposing response text", async () => {
+  const first = parseLikeListPage(`_Callback(${JSON.stringify({
+    code: 0,
+    data: {
+      total_number: 3,
+      has_more: 1,
+      like_uin_info: [{ fuin: 90001, nick: "很长很长的点赞者昵称" }, { fuin: 90002, nick: "小周" }],
+    },
+  })});`, { count: 2 });
+  assert.equal(first.total, 3);
+  assert.equal(first.hasMore, true);
+  assert.equal(first.nextCursor, "90002");
+  assert.deepEqual(first.likes.map((like) => like.name), ["很长很长的点赞者昵称", "小周"]);
+
+  const requested = [];
+  const response = (url, body) => ({
+    ok: true,
+    status: 200,
+    url,
+    headers: { get: () => "application/json" },
+    text: async () => body,
+  });
+  const result = await fetchLikeList({ uin: "12345678", tid: "mood-1", gTk: 456 }, {
+    fetch: async (url) => {
+      requested.push(url);
+      const beginUin = new URL(url).searchParams.get("begin_uin");
+      return beginUin === "0"
+        ? response(url, `_Callback(${JSON.stringify({ code: 0, data: { total_number: 2, has_more: 1, like_uin_info: [{ fuin: 90001, nick: "小周" }] } })});`)
+        : response(url, `_Callback(${JSON.stringify({ code: 0, data: { total_number: 2, has_more: 0, like_uin_info: [{ fuin: 90002, nick: "阿程" }] } })});`);
+    },
+    delay: async () => undefined,
+  });
+  assert.equal(requested.length, 2);
+  assert.deepEqual(result.likes.map((like) => like.name), ["小周", "阿程"]);
+  assert.equal(result.total, 2);
+
+  const url = new URL(buildLikeListUrl({ uin: "12345678", tid: "mood-1", gTk: 456 }));
+  assert.equal(url.hostname, "user.qzone.qq.com");
+  assert.equal(url.searchParams.get("unikey"), "http://user.qzone.qq.com/12345678/mood/mood-1");
+  assert.equal(url.searchParams.get("query_count"), "60");
+  assert.equal(url.searchParams.get("if_first_page"), "1");
+});
+
+test("like-list parser classifies rate limiting as a resumable interaction boundary", () => {
+  assert.throws(
+    () => parseLikeListPage('_Callback({"code":-10000,"message":"busy"});'),
+    (error) => error.code === "QZONE_INTERACTION_RATE_LIMITED",
+  );
 });
 
 test("category rate limiting falls back only to the personal scope=1 timeline", async () => {

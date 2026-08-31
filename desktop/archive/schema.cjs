@@ -96,6 +96,10 @@ function normalizeArchiveEntry(entry) {
       authorNickname: entry.sourceMeta.authorNickname ? String(entry.sourceMeta.authorNickname) : "",
       shareTitle: entry.sourceMeta.shareTitle ? String(entry.sourceMeta.shareTitle) : null,
       sourceName: entry.sourceMeta.sourceName ? String(entry.sourceMeta.sourceName) : null,
+      commentCountReported: Boolean(entry.sourceMeta.commentCountReported),
+      likeCountReported: Boolean(entry.sourceMeta.likeCountReported),
+      likeDetailsFetchedAt: entry.sourceMeta.likeDetailsFetchedAt ? String(entry.sourceMeta.likeDetailsFetchedAt) : null,
+      likeDetailsStatus: ["complete", "empty"].includes(entry.sourceMeta.likeDetailsStatus) ? entry.sourceMeta.likeDetailsStatus : null,
     } : {},
     collectedAt: isoNow(),
   };

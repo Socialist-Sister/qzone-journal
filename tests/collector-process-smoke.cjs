@@ -86,7 +86,10 @@ async function run() {
       archiveRoot: rootPath,
       options: { items: ["posts", "albums", "comments", "likes"], includeComments: true, includeLikes: true, includeMedia: true },
       testMode: true,
-      testEntries: [{ sourceId: "test-post-1", type: "post", createdAt: "2026-08-29T01:00:00.000Z", title: null, text: "独立采集进程测试", media: [], comments: [{ name: "测试用户", text: "评论" }], likes: [{ name: "测试用户" }], metrics: { commentCount: 1, likeCount: 1 }, sourceMeta: { adapter: "test" } }],
+      testEntries: [{ sourceId: "test-post-1", type: "post", createdAt: "2026-08-29T01:00:00.000Z", title: null, text: "独立采集进程测试", media: [], comments: [{ name: "测试用户", text: "评论" }], likes: [{ name: "测试用户" }], metrics: { commentCount: 1, likeCount: 2 }, sourceMeta: { adapter: "test", parserVersion: 7, likeCountReported: true, commentCountReported: true } }],
+      testLikeDetails: {
+        "test-post-1": { likes: [{ name: "测试用户" }, { name: "另一位用户" }], total: 2, diagnostics: [] },
+      },
     };
     const terminal = await runJob({ ...baseJob, jobId: "collector-smoke" });
 
@@ -104,12 +107,29 @@ async function run() {
     assert.equal(manifest.schemaVersion, 1);
     assert.equal(manifest.collection.status, "complete");
     assert.equal(manifest.collection.counts.entries, 1);
+    assert.equal(manifest.collection.counts.likes, 2);
+    assert.equal(manifest.collection.counts.visibleLikes, 2);
     assert.equal(checkpoint.phase, "complete");
+    assert.equal(terminal.progress.some((item) => item.phase === "collecting_likes"), true);
 
     const incremental = await runJob({ ...baseJob, jobId: "collector-incremental-smoke" });
     assert.equal(incremental.message.type, "complete");
     assert.equal(incremental.message.mode, "incremental");
     assert.deepEqual(incremental.message.changes, { added: 0, updated: 0, skipped: 1 });
+
+    const interactionPartial = await runJob({
+      ...baseJob,
+      jobId: "collector-like-partial-smoke",
+      testEntries: [{ ...baseJob.testEntries[0], sourceId: "test-like-partial", text: "点赞补充限流仍需保留正文", likes: [], metrics: { commentCount: 1, likeCount: 1 } }],
+      testLikeErrorCode: "QZONE_INTERACTION_RATE_LIMITED",
+    });
+    assert.equal(interactionPartial.message.type, "complete");
+    assert.equal(interactionPartial.message.phase, "collection_partial");
+    assert.equal(interactionPartial.message.partialReason, "likes");
+    assert.equal(interactionPartial.message.counts.entries, 2);
+    const interactionCheckpoint = JSON.parse(await fs.readFile(path.join(rootPath, "state", "checkpoint.json"), "utf8"));
+    assert.equal(interactionCheckpoint.phase, "partial");
+    assert.equal(interactionCheckpoint.cursors.likes > 0, true);
 
     const partial = await runJob({
       ...baseJob,
@@ -122,10 +142,10 @@ async function run() {
     assert.equal(partial.message.mode, "partial");
     assert.equal(partial.message.truncated, true);
     assert.equal(partial.message.adapterHealth.status, "partial");
-    assert.equal(partial.message.counts.entries, 2);
+    assert.equal(partial.message.counts.entries, 3);
     const partialCheckpoint = JSON.parse(await fs.readFile(path.join(rootPath, "state", "checkpoint.json"), "utf8"));
     assert.equal(partialCheckpoint.phase, "partial");
-    assert.equal(partialCheckpoint.counts.entries, 2);
+    assert.equal(partialCheckpoint.counts.entries, 3);
 
     const cookieStatus = analyzeQzoneCookies([
       { name: "uin", value: "o12345678", domain: ".qq.com" },

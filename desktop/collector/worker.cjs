@@ -1,5 +1,5 @@
 const { ArchiveStore } = require("../archive/store.cjs");
-const { MOOD_PAGE_SIZE, abortableDelay, createCollectionPlan, downloadMedia, fetchMoodPage, probeSession } = require("./qzone-adapter.cjs");
+const { MOOD_PAGE_SIZE, abortableDelay, createCollectionPlan, downloadMedia, fetchLikeList, fetchMoodPage, probeSession } = require("./qzone-adapter.cjs");
 const { isAuthenticationFailure } = require("./qzone-parser.cjs");
 
 const parentPort = process.parentPort;
@@ -44,9 +44,11 @@ async function run(job) {
   let activeCursors = {};
   let parserMigration = null;
   const changes = { added: 0, updated: 0, skipped: 0 };
+  const changedSourceIds = new Set();
   let incrementalMode = false;
   let stoppedAtKnownPage = false;
   let paginationTruncated = null;
+  let interactionTruncated = null;
   let adapterHealth = { status: "healthy", adapter: "mood_list", message: "QQ 说说分类接口工作正常" };
 
   try {
@@ -63,7 +65,7 @@ async function run(job) {
     const lastFullScanAt = Date.parse(String(initialization.manifest.collection?.lastFullScanAt || ""));
     const fullScanDue = !Number.isFinite(lastFullScanAt) || Date.now() - lastFullScanAt >= 30 * 24 * 60 * 60 * 1000;
     incrementalMode = counts.entries > 0 && !canResume && !initialization.migrationRequired && !fullScanDue;
-    activeCursors = { posts: resumeCursor, postAdapter: resumeAdapter };
+    activeCursors = { posts: resumeCursor, postAdapter: resumeAdapter, likes: 0 };
     throwIfCancelled();
     await store.writeCheckpoint({ jobId: job.jobId, phase: "session_check", cursors: activeCursors, counts });
 
@@ -81,14 +83,14 @@ async function run(job) {
       incrementalMode = false;
       resumeCursor = "";
       resumeAdapter = "mood_list";
-      activeCursors = { posts: "", postAdapter: resumeAdapter };
+      activeCursors = { posts: "", postAdapter: resumeAdapter, likes: 0 };
     }
     const plan = createCollectionPlan(job.options);
     throwIfCancelled();
     await store.writeDiagnostic("collection-plan", { items: plan });
     let cursor = resumeCursor;
     let postAdapter = resumeAdapter;
-    activeCursors = { posts: cursor, postAdapter };
+    activeCursors = { posts: cursor, postAdapter, likes: 0 };
     await store.writeCheckpoint({ jobId: job.jobId, phase: "adapter_ready", cursors: activeCursors, counts });
 
     const needsPostStream = job.options.items.some((item) => ["posts", "comments", "likes"].includes(item));
@@ -167,9 +169,15 @@ async function run(job) {
         const pageChanges = { added: 0, updated: 0, skipped: 0 };
         for (const sourceEntry of page.entries) {
           throwIfCancelled();
+          const embeddedLikeCount = Math.max(sourceEntry.likes?.length || 0, Number(sourceEntry.metrics?.likeCount) || 0);
+          const embeddedCommentCount = Math.max(sourceEntry.comments?.length || 0, Number(sourceEntry.metrics?.commentCount) || 0);
+          const hasEmbeddedLikeState = Boolean(sourceEntry.sourceMeta?.likeCountReported)
+            && (sourceEntry.likes?.length || 0) >= embeddedLikeCount;
+          const hasEmbeddedCommentState = Boolean(sourceEntry.sourceMeta?.commentCountReported)
+            && (sourceEntry.comments?.length || 0) >= embeddedCommentCount;
           const inspection = await store.inspectEntry(sourceEntry, {
-            includeComments: job.options.includeComments,
-            includeLikes: job.options.includeLikes,
+            includeComments: job.options.includeComments && hasEmbeddedCommentState,
+            includeLikes: job.options.includeLikes && hasEmbeddedLikeState,
             includeMedia: job.options.includeMedia,
           });
           if (inspection.change === "skipped") {
@@ -203,6 +211,7 @@ async function run(job) {
           });
           await store.writeEntry(entry);
           changes[inspection.change] += 1;
+          changedSourceIds.add(String(entry.sourceId));
           pageChanges[inspection.change] += 1;
           processedEntries += 1;
         }
@@ -233,17 +242,126 @@ async function run(job) {
         hasMore = Boolean(!reachedKnownPage && page.hasMore && nextCursor && nextCursor !== cursor && !seenCursors.has(nextCursor));
         if (nextCursor) seenCursors.add(nextCursor);
         cursor = nextCursor;
-        activeCursors = { posts: cursor, postAdapter };
+        activeCursors = { posts: cursor, postAdapter, likes: 0 };
         if (hasMore && !job.testMode) {
           const baseDelay = postAdapter === "mood_list" ? 450 : 1200;
           await abortableDelay(baseDelay + Math.floor(Math.random() * 450), activeAbortController.signal);
         }
       }
       if (hasMore) throw new Error("说说页数超过 500 页安全限制，已保存恢复点，可再次运行继续");
+      if (!paginationTruncated) {
+        cursor = "";
+        activeCursors = { posts: "", postAdapter, likes: 0 };
+      }
       if (!processedEntries && !counts.entries) await store.writeDiagnostic("empty-post-stream", { message: "接口成功返回，但没有找到本人可归档的说说" });
     }
 
     if (mediaFailures.length) await store.writeDiagnostic("media-download-failures", { count: mediaFailures.length, items: mediaFailures });
+
+    if (job.options.includeLikes && counts.entries > 0) {
+      let likeCursor = 0;
+      let inspectedLikes = 0;
+      let hasMoreLikeEntries = true;
+      const likeDiagnostics = [];
+      while (hasMoreLikeEntries && !interactionTruncated) {
+        throwIfCancelled();
+        const page = await store.readEntriesPage({ cursor: likeCursor, limit: 20, type: "post" });
+        if (!page.entries.length) break;
+        for (const storedEntry of page.entries) {
+          throwIfCancelled();
+          inspectedLikes += 1;
+          activeCursors = { posts: cursor, postAdapter, likes: inspectedLikes };
+          const fetchedAt = Date.parse(String(storedEntry.sourceMeta?.likeDetailsFetchedAt || ""));
+          const fresh = Number.isFinite(fetchedAt)
+            && Date.now() - fetchedAt < 24 * 60 * 60 * 1000
+            && ["complete", "empty"].includes(storedEntry.sourceMeta?.likeDetailsStatus);
+          if (fresh) continue;
+
+          const currentLikes = Array.isArray(storedEntry.likes) ? storedEntry.likes : [];
+          const currentTotal = Math.max(currentLikes.length, Number(storedEntry.metrics?.likeCount) || 0);
+          const embeddedComplete = Boolean(storedEntry.sourceMeta?.likeCountReported) && currentLikes.length >= currentTotal;
+          let result;
+          try {
+            if (job.testMode && job.testLikeErrorCode) {
+              const error = new Error("simulated like-list boundary");
+              error.code = job.testLikeErrorCode;
+              throw error;
+            }
+            result = embeddedComplete
+              ? { likes: currentLikes, total: currentTotal, diagnostics: [] }
+              : job.testMode
+                ? job.testLikeDetails?.[storedEntry.sourceId] || { likes: currentLikes, total: currentTotal, diagnostics: [] }
+                : await fetchLikeList({
+                  uin: job.ownerUin,
+                  tid: storedEntry.sourceId,
+                  gTk: job.gTk,
+                  signal: activeAbortController.signal,
+                });
+          } catch (error) {
+            if (activeAbortController.signal.aborted) throw error;
+            interactionTruncated = {
+              code: String(error?.code || "QZONE_INTERACTION_UNAVAILABLE"),
+              reason: isAuthenticationFailure(error?.code) ? "authentication" : error?.code === "QZONE_INTERACTION_RATE_LIMITED" ? "rate_limited" : "unavailable",
+              processed: inspectedLikes - 1,
+            };
+            await store.writeDiagnostic("like-enrichment-partial", {
+              reason: interactionTruncated.reason,
+              parserCode: interactionTruncated.code,
+              processedEntries: interactionTruncated.processed,
+              totalEntries: page.page.total,
+              response: error?.diagnostic || null,
+            });
+            break;
+          }
+
+          const nextLikes = (Array.isArray(result.likes) ? result.likes : []).slice(0, 3000).map((person) => ({
+            name: String(person?.name || person?.nickname || "QQ 用户"),
+            source: String(person?.source || "qzone_like_list"),
+          }));
+          const nextTotal = Math.max(nextLikes.length, currentTotal, Number(result.total) || 0);
+          const now = new Date().toISOString();
+          const updatedEntry = {
+            ...storedEntry,
+            likes: nextLikes,
+            metrics: { ...(storedEntry.metrics || {}), likeCount: nextTotal },
+            sourceMeta: {
+              ...(storedEntry.sourceMeta || {}),
+              likeDetailsFetchedAt: now,
+              likeDetailsStatus: nextLikes.length ? "complete" : "empty",
+            },
+          };
+          const beforeNames = currentLikes.map((person) => String(person?.name || person?.nickname || person || "")).join("\n");
+          const afterNames = nextLikes.map((person) => person.name).join("\n");
+          const interactionChanged = beforeNames !== afterNames || currentTotal !== nextTotal;
+          await store.writeEntry(updatedEntry);
+          if (interactionChanged && !changedSourceIds.has(String(storedEntry.sourceId))) {
+            changes.updated += 1;
+            changedSourceIds.add(String(storedEntry.sourceId));
+          }
+          if (result.diagnostics?.length && likeDiagnostics.length < 100) {
+            likeDiagnostics.push({ entryNumber: inspectedLikes, pages: result.diagnostics });
+          }
+          counts = await store.summarize();
+          const interactionProgress = Math.min(95, 92 + Math.floor(3 * inspectedLikes / Math.max(1, page.page.total)));
+          emit("progress", {
+            jobId: job.jobId,
+            progress: interactionProgress,
+            phase: "collecting_likes",
+            message: `正在补充点赞名单（${inspectedLikes}/${page.page.total}）…`,
+            changes,
+          });
+          await store.writeCheckpoint({ jobId: job.jobId, phase: "collecting_likes", cursors: activeCursors, counts });
+          if (!embeddedComplete && !job.testMode) {
+            await abortableDelay(1600 + Math.floor(Math.random() * 700), activeAbortController.signal);
+          }
+        }
+        await store.flushIndexes();
+        likeCursor = Number(page.page.nextCursor || 0);
+        hasMoreLikeEntries = Boolean(page.page.hasMore && page.page.nextCursor);
+      }
+      if (likeDiagnostics.length) await store.writeDiagnostic("like-enrichment-pages", { items: likeDiagnostics });
+      counts = await store.summarize();
+    }
 
     emit("progress", { jobId: job.jobId, progress: 96, phase: "archive_ready", message: "正在写入归档清单与本地索引…" });
     throwIfCancelled();
@@ -252,11 +370,11 @@ async function run(job) {
     counts = await store.summarize();
     await store.complete({
       jobId: job.jobId,
-      status: paginationTruncated ? "partial" : "complete",
+      status: paginationTruncated || interactionTruncated ? "partial" : "complete",
       counts,
       changes,
       fullScanCompleted: !stoppedAtKnownPage && !paginationTruncated,
-      cursors: paginationTruncated ? activeCursors : {},
+      cursors: paginationTruncated || interactionTruncated ? activeCursors : {},
     });
     if (parserMigration) {
       await store.commitParserMigration(parserMigration);
@@ -268,15 +386,20 @@ async function run(job) {
       archivePath: job.archiveRoot,
       counts,
       changes,
-      mode: paginationTruncated ? "partial" : stoppedAtKnownPage ? "incremental" : "full",
-      truncated: Boolean(paginationTruncated),
+      mode: paginationTruncated || interactionTruncated ? "partial" : stoppedAtKnownPage ? "incremental" : "full",
+      truncated: Boolean(paginationTruncated || interactionTruncated),
+      partialReason: paginationTruncated ? "timeline" : interactionTruncated ? "likes" : undefined,
       adapterHealth: paginationTruncated
         ? { status: "partial", adapter: postAdapter, message: "QQ 未继续返回更早内容，已保存恢复点，可稍后继续" }
+        : interactionTruncated
+          ? { status: "partial", adapter: "like_list", message: "说说正文已经保存；QQ 暂未继续返回点赞名单，已保留互动补充进度" }
         : adapterHealth,
       schemaVersion: 1,
-      phase: paginationTruncated ? "collection_partial" : "collection_complete",
+      phase: paginationTruncated || interactionTruncated ? "collection_partial" : "collection_complete",
       message: paginationTruncated
         ? `QQ 暂未继续返回更早内容，已保存当前可读取的 ${counts.entries} 条内容`
+        : interactionTruncated
+          ? `已保存 ${counts.entries} 条内容；点赞名单可在稍后再次备份时继续补充`
         : `已将 ${counts.entries} 条内容写入本地档案`,
     });
   } catch (error) {

@@ -919,9 +919,21 @@ input:focus-visible {
 .detail-expansion-note { display: block; margin-top: 5px; color: #93918b; font-size: 9px; line-height: 1.5; }
 .archive-stats-note { margin: 7px 0 0; color: #8b8c88; font-size: 9px; }
 .timeline-error { margin-top: 8px; display: flex; align-items: center; gap: 6px; color: #9b5c4f; font-size: 10px; }
-.detail-comment { display: grid; grid-template-columns: 48px 1fr; gap: 7px; }
-.detail-comment b { color: #536f94; }
-.detail-comment > span { min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; }
+.detail-like-list { color: #536f94 !important; }
+.detail-like-list > span { display: inline; }
+.detail-empty-interaction { color: #858985 !important; }
+.detail-comment { display: block; }
+.detail-comment b {
+  max-width: min(42%, 144px);
+  display: inline-block;
+  overflow: hidden;
+  color: #536f94;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+.detail-comment-separator { color: #707570; }
+.detail-comment-text { white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; }
 .detail-placeholder { color: var(--muted); text-align: center; }
 
 .qq-emotion {

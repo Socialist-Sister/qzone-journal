@@ -803,6 +803,14 @@ function publicCollectorEvent(message) {
     changes,
     mode: type === "complete" && ["full", "incremental", "partial"].includes(message?.mode) ? message.mode : undefined,
     truncated: type === "complete" ? Boolean(message?.truncated) : undefined,
+    partialReason: type === "complete" && ["timeline", "likes"].includes(message?.partialReason) ? message.partialReason : undefined,
+    adapterHealth: type === "complete" && message?.adapterHealth && typeof message.adapterHealth === "object"
+      ? {
+          status: ["healthy", "degraded", "partial"].includes(message.adapterHealth.status) ? message.adapterHealth.status : "partial",
+          adapter: String(message.adapterHealth.adapter || "unknown").slice(0, 80),
+          message: String(message.adapterHealth.message || "").slice(0, 300),
+        }
+      : undefined,
     schemaVersion: type === "complete" ? Number(message?.schemaVersion) || 1 : undefined,
   };
 }
