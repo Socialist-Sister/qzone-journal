@@ -1,27 +1,26 @@
-# Design QA — Settings privacy confirmation row
+# Design QA — Settings privacy action hierarchy
 
 ## Evidence
 
-- Source visual truth: `docs/qa/v0.6.0-alpha/settings-confirmation-before.png` (1479 × 171).
-- Rendered desktop implementation: `docs/qa/v0.6.0-alpha/settings-privacy-full.png` (2214 × 1318 at the active Windows scale factor; Electron window 1120 × 720).
-- Focused implementation: `docs/qa/v0.6.0-alpha/settings-confirmation-after.png` (1432 × 156).
-- Combined comparison input: `docs/qa/v0.6.0-alpha/settings-confirmation-comparison.png` (1500 × 360).
-- State: Settings → Privacy & Export, confirmation information row visible.
+- Source state: `docs/qa/v0.6.0-alpha/settings-privacy-full.png` (2214 × 1318 at the active Windows scale factor).
+- Rendered implementation: `docs/qa/v0.6.0-alpha/settings-privacy-without-info-row.png` (2214 × 1318; Electron window 1120 × 720).
+- Equal-state comparison: `docs/qa/v0.6.0-alpha/settings-privacy-removal-comparison.png` (1420 × 437, both captures normalized to 700 × 417).
+- State: Settings → Privacy & Export, account menu open in the same fixture state.
 
 ## Findings and iteration history
 
-1. **P2 — Related content split across the full row.** In the source capture, the shield icon sat at the far left while its heading and description were pushed to the far right by inherited `space-between` alignment. This weakened grouping and made the row look like a control with a missing middle section.
-2. **Fix.** The informational row now uses start alignment with a 12px gap; the icon, heading, and description read as one compact information group. No copy, icon, color, typography, row height, divider, or surrounding setting behavior changed.
-3. **Post-fix evidence.** The combined comparison shows the same warm-paper row and content with the excessive horizontal void removed. The full Electron smoke suite passed in the target desktop runtime.
+1. **P2 — Informational row presented as a third setting.** The “Confirm again before export” explanation sat between two operational rows, inherited the same divider and height, and therefore looked interactive despite having no action.
+2. **Fix.** Removed the standalone informational row. The confirmation requirement remains a product rule and will appear inside the future public-export flow when that action is implemented.
+3. **Post-fix evidence.** The card now contains two unambiguous rows: the planned anonymization setting and the diagnostic-export action. The full Electron smoke suite passed after removal.
 
 ## Required fidelity surfaces
 
-- Fonts and typography: unchanged; heading and description retain existing size, weight, and line height.
-- Spacing and layout rhythm: corrected only the horizontal grouping; existing vertical padding and dividers remain intact.
-- Colors and tokens: unchanged warm ivory, charcoal, muted gray, and restrained blue.
-- Image and icon quality: existing Phosphor shield icon retained; no replacement asset was introduced.
-- Copy and content: unchanged.
+- Fonts and typography: unchanged.
+- Spacing and layout rhythm: the unused middle row is gone; remaining padding, dividers, alignment, and card proportions stay consistent.
+- Colors and tokens: unchanged.
+- Image and icon quality: no new or substituted asset; the obsolete shield icon instance was removed with its row.
+- Copy and content: only the redundant future-behavior explanation was removed.
 
-No remaining P0, P1, or P2 issue is visible in the corrected row.
+No remaining P0, P1, or P2 issue is visible in this settings card.
 
 final result: passed

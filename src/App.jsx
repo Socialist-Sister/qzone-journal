@@ -1570,10 +1570,6 @@ function SettingsView({ section, onSectionChange, aiConfig, onAiConfigChange, ar
                   <div><strong>公开导出时匿名化好友</strong><span>计划功能；多格式导出尚未在当前 Alpha 中接入</span></div>
                   <input type="checkbox" checked={anonymous} onChange={(event) => setAnonymous(event.target.checked)} disabled />
                 </label>
-                <div className="settings-info-row">
-                  <ShieldCheck size={23} weight="fill" />
-                  <div><strong>导出前再次确认</strong><span>后续接入导出时，将在包含互动人员信息前再次确认范围。</span></div>
-                </div>
                 <div className="settings-row settings-directory-row">
                   <div><strong>脱敏诊断包</strong><span>导出应用、采集和档案状态，不包含 Cookie、完整 QQ 号、API Key、动态正文、人员信息、原始响应或本地绝对路径。</span></div>
                   <button className="archive-maintenance-action" type="button" disabled={exportingDiagnostics} onClick={exportDiagnostics}>

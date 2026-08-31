@@ -323,24 +323,15 @@ async function run() {
   assert.equal(diagnosticExportCalls, 1);
   if (process.env.QZONE_VISUAL_CAPTURE_DIR) {
     const captureDirectory = path.resolve(process.env.QZONE_VISUAL_CAPTURE_DIR);
-    const privacyRowRect = await window.webContents.executeJavaScript(`(async () => {
+    await window.webContents.executeJavaScript(`(async () => {
       const findButton = (label) => [...document.querySelectorAll("button")].find((button) => button.textContent.trim() === label);
       findButton("设置")?.click();
       await new Promise((resolve) => setTimeout(resolve, 100));
       findButton("隐私与导出")?.click();
       await new Promise((resolve) => setTimeout(resolve, 160));
-      const row = document.querySelector(".settings-info-row");
-      const rect = row.getBoundingClientRect();
-      return {
-        x: Math.max(0, Math.floor(rect.left)),
-        y: Math.max(0, Math.floor(rect.top)),
-        width: Math.max(1, Math.min(window.innerWidth - Math.floor(rect.left), Math.ceil(rect.width))),
-        height: Math.max(1, Math.min(window.innerHeight - Math.max(0, Math.floor(rect.top)), Math.ceil(rect.height))),
-      };
     })()`);
     await forceFreshFrame(window);
-    fs.writeFileSync(path.join(captureDirectory, "settings-privacy-full.png"), (await capturePageWithRetry(window)).toPNG());
-    fs.writeFileSync(path.join(captureDirectory, "settings-confirmation-row.png"), (await capturePageWithRetry(window, privacyRowRect)).toPNG());
+    fs.writeFileSync(path.join(captureDirectory, "settings-privacy-without-info-row.png"), (await capturePageWithRetry(window)).toPNG());
     await window.webContents.executeJavaScript(`document.querySelector('.titlebar-nav-item[aria-label="首页"]')?.click()`);
   }
 

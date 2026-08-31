@@ -1459,8 +1459,7 @@ input:focus-visible {
 .ai-config-notes strong { margin-right: 6px; color: #625747; }
 .settings-list { width: 100%; margin-top: 13px; border-top: 1px solid var(--line); }
 .settings-list label,
-.settings-row,
-.settings-info-row {
+.settings-row {
   width: 100%;
   padding: 18px 0;
   border-bottom: 1px solid var(--line);
@@ -1470,9 +1469,8 @@ input:focus-visible {
   gap: 22px;
 }
 .settings-list label > div,
-.settings-row > div,
-.settings-info-row > div { display: grid; gap: 5px; }
-.settings-list strong, .settings-info-row strong { font-size: 14px; }
+.settings-row > div { display: grid; gap: 5px; }
+.settings-list strong { font-size: 14px; }
 .settings-list span { color: var(--muted); font-size: 12px; line-height: 1.5; }
 .settings-list input { width: 44px; height: 22px; margin: 0; accent-color: var(--blue-deep); }
 .settings-list > label {
@@ -1544,10 +1542,6 @@ input:focus-visible {
 .change-directory-action:hover,
 .open-directory-action:hover { background: var(--blue-soft); border-color: rgba(77, 141, 225, 0.48); }
 .open-directory-action svg { display: block; }
-.settings-info-row { justify-content: flex-start; align-items: flex-start; gap: 12px; }
-.settings-info-row > svg { flex: 0 0 auto; margin-top: 1px; color: var(--blue-deep); }
-.settings-info-row > div { min-width: 0; }
-
 .about-product {
   margin-top: 17px;
   display: grid;
