@@ -20,26 +20,26 @@ async function run() {
     const recoveredPage = await fetchMoodPage({
       uin: "12345678",
       gTk: 123,
-      cursor: "offset=90&pagenum=5",
-      scope: 1,
+      cursor: "40",
+      adapter: "mood_list",
       resetStaleCursor: true,
-    }, async (options) => {
-      staleCursorCalls.push(options.cursor);
-      if (options.cursor) {
+    }, { fetch: async (url) => {
+      const offset = new URL(url).searchParams.get("pos");
+      staleCursorCalls.push(offset);
+      if (offset !== "0") {
         const error = new Error("stale cursor");
         error.code = -10001;
         throw error;
       }
       return {
-        entries: [],
-        rawCount: 1,
-        requestScope: 1,
-        hasMore: false,
-        cursor: "",
-        diagnostic: {},
+        ok: true,
+        status: 200,
+        url,
+        headers: { get: () => "application/json" },
+        text: async () => '_preloadCallback({"code":0,"total":0,"msglist":[]});',
       };
-    });
-    assert.deepEqual(staleCursorCalls, ["offset=90&pagenum=5", ""]);
+    } });
+    assert.deepEqual(staleCursorCalls, ["40", "0"]);
     assert.equal(recoveredPage.resumeCursorReset, true);
     assert.equal(recoveredPage.diagnostic.rejectedCursorCode, "-10001");
 
@@ -48,14 +48,14 @@ async function run() {
       uin: "12345678",
       gTk: 123,
       cursor: "",
-      scope: 1,
+      adapter: "mood_list",
       resetStaleCursor: true,
-    }, async () => {
+    }, { fetch: async () => {
       freshRequestCalls += 1;
       const error = new Error("expired session");
       error.code = -10001;
       throw error;
-    }), /expired session/);
+    } }), /expired session/);
     assert.equal(freshRequestCalls, 1);
 
     const runJob = (job) => new Promise((resolve, reject) => {
@@ -127,7 +127,8 @@ async function run() {
     ]);
     assert.equal(cookieStatus.authenticated, true);
     assert.equal(cookieStatus.uin, "12345678");
-    assert.equal("uin" in publicSessionStatus(cookieStatus), false);
+    assert.equal(publicSessionStatus(cookieStatus).uin, "12345678");
+    assert.match(publicSessionStatus(cookieStatus).avatarUrl, /dst_uin=12345678/);
     const mediaOnlyStatus = analyzeQzoneCookies([
       { name: "media_p_uin", value: "o12345678", domain: ".qq.com" },
       { name: "media_p_skey", value: "temporary", domain: ".qq.com" },

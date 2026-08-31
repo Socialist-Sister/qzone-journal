@@ -5,6 +5,7 @@ const { createHash, randomUUID } = require("node:crypto");
 const { pathToFileURL } = require("node:url");
 const { sanitizeCollectionOptions } = require("./archive/schema.cjs");
 const { ArchiveStore } = require("./archive/store.cjs");
+const { normalizeQzoneMentions } = require("./collector/qzone-parser.cjs");
 const {
   addQzoneAccount,
   clearQzoneCookies,
@@ -16,7 +17,9 @@ const {
   listQzoneAccounts,
   openQzoneLogin,
   publicSessionStatus,
+  qzoneAvatarUrl,
   switchQzoneAccount,
+  updateQzoneAccountProfile,
 } = require("./qzone-session.cjs");
 
 const DEV_SERVER_URL = process.env.QZONE_JOURNAL_DEV_SERVER_URL || "http://127.0.0.1:4173";
@@ -218,12 +221,15 @@ function compactArchive(archive) {
       type: String(entry.type || "post"),
       date: String(entry.date || ""),
       title: entry.title ? String(entry.title).slice(0, 160) : undefined,
-      text: String(entry.text || "").slice(0, 2400),
+      text: normalizeQzoneMentions(entry.text).slice(0, 2400),
       location: entry.location ? String(entry.location).slice(0, 120) : undefined,
       imageCount: Array.isArray(entry.images) ? entry.images.length : 0,
       likeCount: Array.isArray(entry.likes) ? entry.likes.length : Number(entry.likes || 0),
       comments: Array.isArray(entry.comments)
-        ? entry.comments.slice(0, 30).map((comment) => ({ author: String(comment.author || ""), text: String(comment.text || "").slice(0, 500) }))
+        ? entry.comments.slice(0, 30).map((comment) => ({
+          author: normalizeQzoneMentions(comment.author || comment.name),
+          text: normalizeQzoneMentions(comment.text).slice(0, 500),
+        }))
         : [],
     })),
   };
@@ -430,11 +436,16 @@ async function writeArchiveIndex(index) {
   await fs.rename(temporary, target);
 }
 
-async function rememberLatestArchive(archiveRoot, accountLabel, accountId) {
+async function rememberLatestArchive(archiveRoot, profile, accountId) {
   const index = await readArchiveIndex();
+  const uin = /^\d{5,15}$/.test(String(profile?.uin || "")) ? String(profile.uin) : "";
+  const nickname = String(profile?.nickname || "").trim().slice(0, 80);
   index.byAccount[String(accountId || "legacy")] = {
     archiveRoot,
-    accountLabel,
+    uin,
+    nickname,
+    avatarUrl: qzoneAvatarUrl(uin),
+    accountLabel: nickname || (uin ? `QQ ${uin}` : profile?.accountLabel || "QQ 空间"),
     updatedAt: new Date().toISOString(),
   };
   await writeArchiveIndex(index);
@@ -469,6 +480,39 @@ async function assertDeletableArchiveRoot(archiveRoot) {
   return resolved;
 }
 
+async function readArchiveIdentity(archiveRoot, suppliedEntries) {
+  let manifest = null;
+  try {
+    manifest = JSON.parse(await fs.readFile(path.join(archiveRoot, "manifest.json"), "utf8"));
+  } catch {
+    return { uin: "", nickname: "", avatarUrl: "" };
+  }
+  const ownerCandidate = String(manifest?.source?.ownerUin || "").replace(/\D/g, "");
+  const uin = /^\d{5,15}$/.test(ownerCandidate) ? ownerCandidate : "";
+  let entries = Array.isArray(suppliedEntries) ? suppliedEntries : null;
+  if (!entries) {
+    const entriesDirectory = path.join(archiveRoot, "records", "entries");
+    try {
+      const names = (await fs.readdir(entriesDirectory)).filter((name) => name.endsWith(".json"));
+      entries = (await Promise.all(names.map(async (name) => {
+        try {
+          return JSON.parse(await fs.readFile(path.join(entriesDirectory, name), "utf8"));
+        } catch {
+          return null;
+        }
+      }))).filter(Boolean);
+    } catch {
+      entries = [];
+    }
+  }
+  const nickname = String(entries.find((entry) => String(entry?.sourceMeta?.authorNickname || "").trim())?.sourceMeta?.authorNickname || "")
+    .replace(/[\u0000-\u001f\u007f]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 80);
+  return { uin, nickname, avatarUrl: qzoneAvatarUrl(uin) };
+}
+
 async function readLatestArchive(accountId) {
   const index = await readArchiveIndex();
   const activeAccountId = String(accountId || await getActiveQzoneAccountId());
@@ -497,6 +541,16 @@ async function readLatestArchive(accountId) {
       return null;
     }
   }))).filter(Boolean);
+  const archiveIdentity = await readArchiveIdentity(archiveRoot, rawEntries);
+  const accountProfile = await updateQzoneAccountProfile(activeAccountId, {
+    uin: archiveIdentity.uin || accountIndex.uin,
+    nickname: archiveIdentity.nickname || accountIndex.nickname,
+  }).catch(() => ({
+    uin: archiveIdentity.uin || String(accountIndex.uin || ""),
+    nickname: archiveIdentity.nickname || String(accountIndex.nickname || ""),
+    avatarUrl: archiveIdentity.avatarUrl || String(accountIndex.avatarUrl || ""),
+    accountLabel: String(accountIndex.accountLabel || "QQ 空间"),
+  }));
   const entries = rawEntries.map((entry) => {
     const date = entry.createdAt || "";
     const dateValue = date ? new Date(date) : null;
@@ -514,7 +568,7 @@ async function readLatestArchive(accountId) {
         ? new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "long", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false }).format(dateValue)
         : "时间未知",
       title: entry.title || null,
-      text: String(entry.text || ""),
+      text: normalizeQzoneMentions(entry.text),
       links: (Array.isArray(entry.links) ? entry.links : []).flatMap((link) => {
         try {
           const url = new URL(String(link?.url || ""));
@@ -528,7 +582,10 @@ async function readLatestArchive(accountId) {
       images,
       mediaCount: images.length,
       likes: (Array.isArray(entry.likes) ? entry.likes : []).map((like) => String(like?.name || like?.nickname || "QQ 用户")),
-      comments: (Array.isArray(entry.comments) ? entry.comments : []).map((comment) => ({ name: String(comment?.name || "QQ 用户"), text: String(comment?.text || comment?.content || "") })),
+      comments: (Array.isArray(entry.comments) ? entry.comments : []).map((comment) => ({
+        name: normalizeQzoneMentions(comment?.name || "QQ 用户"),
+        text: normalizeQzoneMentions(comment?.text || comment?.content),
+      })),
     };
   }).sort((a, b) => String(b.date).localeCompare(String(a.date)));
   const years = entries.map((entry) => Number(String(entry.date).slice(0, 4))).filter(Number.isFinite);
@@ -538,7 +595,10 @@ async function readLatestArchive(accountId) {
   return {
     id: String(manifest.archiveId || "local-qzone-archive"),
     isDemo: false,
-    profileName: `${String(accountIndex.accountLabel || "QQ 空间")}的空间`,
+    ownerUin: accountProfile.uin,
+    ownerNickname: accountProfile.nickname,
+    avatarUrl: accountProfile.avatarUrl,
+    profileName: `${accountProfile.nickname || (accountProfile.uin ? `QQ ${accountProfile.uin}` : accountProfile.accountLabel || "QQ 空间")}的空间`,
     lastBackupAt: imported.toISOString(),
     importedAt: new Intl.DateTimeFormat("zh-CN", { dateStyle: "long", timeStyle: "short" }).format(imported),
     range: years.length ? `${Math.min(...years)}—${Math.max(...years)}` : "尚无内容",
@@ -559,16 +619,30 @@ async function repairLatestArchive(accountId) {
 async function listAccountsWithArchives() {
   const state = await listQzoneAccounts();
   const index = await readArchiveIndex();
+  const accounts = await Promise.all(state.accounts.map(async (account) => {
+    const archive = index.byAccount[account.id];
+    let identity = { uin: "", nickname: "", avatarUrl: "" };
+    if (archive?.archiveRoot) {
+      try {
+        identity = await readArchiveIdentity(await assertArchiveRoot(archive.archiveRoot));
+      } catch {
+        // Keep the stored profile when an archive is temporarily unavailable.
+      }
+    }
+    const profile = await updateQzoneAccountProfile(account.id, {
+      uin: account.uin || archive?.uin || identity.uin,
+      nickname: account.nickname || archive?.nickname || identity.nickname,
+    }).catch(() => account);
+    return {
+      ...account,
+      ...profile,
+      hasArchive: Boolean(archive?.archiveRoot),
+      archivePath: archive?.archiveRoot ? String(archive.archiveRoot) : "",
+    };
+  }));
   return {
     activeAccountId: state.activeAccountId,
-    accounts: state.accounts.map((account) => {
-      const archive = index.byAccount[account.id];
-      return {
-        ...account,
-        hasArchive: Boolean(archive?.archiveRoot),
-        archivePath: archive?.archiveRoot ? String(archive.archiveRoot) : "",
-      };
-    }),
+    accounts,
   };
 }
 
@@ -779,7 +853,12 @@ async function startCollectorJob(sender, input) {
       if (terminalWithArchive) {
         // Use the main-process-selected path; never trust a path sent by the worker.
         event.archivePath = archiveRoot;
-        await rememberLatestArchive(archiveRoot, sessionStatus.accountLabel, sessionStatus.accountId);
+        const archiveIdentity = await readArchiveIdentity(archiveRoot);
+        const profile = await updateQzoneAccountProfile(sessionStatus.accountId, {
+          uin: sessionStatus.uin || archiveIdentity.uin,
+          nickname: sessionStatus.nickname || archiveIdentity.nickname,
+        });
+        await rememberLatestArchive(archiveRoot, profile, sessionStatus.accountId);
       }
       if (["complete", "error", "cancelled"].includes(event.type)) await finish();
       if (!sender.isDestroyed()) sender.send("desktop:qzone:collector-event", event);
@@ -802,7 +881,14 @@ async function startCollectorJob(sender, input) {
     type: "start",
     job: { jobId, ownerUin: sessionStatus.uin, gTk: sessionStatus.gTk, archiveRoot, options },
   });
-  return { jobId, archivePath: archiveRoot, accountLabel: sessionStatus.accountLabel };
+  return {
+    jobId,
+    archivePath: archiveRoot,
+    uin: sessionStatus.uin,
+    nickname: sessionStatus.nickname,
+    avatarUrl: sessionStatus.avatarUrl,
+    accountLabel: sessionStatus.accountLabel,
+  };
 }
 
 ipcMain.handle("desktop:window:minimize", (event) => {

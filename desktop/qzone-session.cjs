@@ -9,6 +9,7 @@ const LEGACY_PERSISTENT_PARTITION = "persist:qzone-journal-account";
 const LEGACY_PERSISTENT_PARTITION_PREFIX = "persist:qzone-journal-account-";
 const QZONE_HOME_URL = "https://qzone.qq.com/";
 const FEEDS3_AUTH_URL = "https://user.qzone.qq.com/proxy/domain/ic2.qzone.qq.com/cgi-bin/feeds/feeds3_html_more";
+const QZONE_PORTRAIT_URL = "https://r.qzone.qq.com/fcg-bin/cgi_get_portrait.fcg";
 const AUTH_FAILURE_CODES = new Set([-3, -100, -3000, -10001, -10006]);
 const LEGACY_ACCOUNT_ID = "legacy";
 
@@ -27,6 +28,73 @@ function isAllowedQqUrl(value) {
 function normalizeUin(value) {
   const digits = String(value || "").replace(/\D/g, "");
   return /^\d{5,15}$/.test(digits) ? digits : "";
+}
+
+function normalizeNickname(value) {
+  return String(value || "")
+    .replace(/[\u0000-\u001f\u007f]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 80);
+}
+
+function qzoneAvatarUrl(uin) {
+  const normalized = normalizeUin(uin);
+  return normalized ? `https://q.qlogo.cn/headimg_dl?dst_uin=${encodeURIComponent(normalized)}&spec=100` : "";
+}
+
+function parseQzonePortraitResponse(value, uin) {
+  const source = String(value || "").replace(/^\uFEFF/, "").trim();
+  const start = source.indexOf("{");
+  const end = source.lastIndexOf("}");
+  if (start < 0 || end <= start) return null;
+  try {
+    const payload = JSON.parse(source.slice(start, end + 1));
+    const normalizedUin = normalizeUin(uin);
+    const record = payload?.[normalizedUin];
+    const nickname = normalizeNickname(Array.isArray(record)
+      ? record[6]
+      : record?.nickname || record?.nick || record?.name);
+    if (!nickname) return null;
+    return { uin: normalizedUin, nickname, avatarUrl: qzoneAvatarUrl(normalizedUin) };
+  } catch {
+    return null;
+  }
+}
+
+async function fetchQzoneProfile(uin, qzoneSession) {
+  const normalizedUin = normalizeUin(uin);
+  if (!normalizedUin) return null;
+  try {
+    const url = `${QZONE_PORTRAIT_URL}?uins=${encodeURIComponent(normalizedUin)}&_=${Date.now()}`;
+    const response = await qzoneSession.fetch(url, {
+      method: "GET",
+      credentials: "include",
+      redirect: "follow",
+      signal: AbortSignal.timeout(8000),
+      headers: {
+        accept: "application/javascript, text/javascript, */*; q=0.01",
+        referer: `https://user.qzone.qq.com/${encodeURIComponent(normalizedUin)}`,
+      },
+    });
+    if (!response.ok) return null;
+    const bytes = await response.arrayBuffer();
+    const contentType = String(response.headers.get("content-type") || "").toLowerCase();
+    const encodings = /charset\s*=\s*(?:gbk|gb2312|gb18030)/i.test(contentType)
+      ? ["gb18030", "utf-8"]
+      : ["utf-8", "gb18030"];
+    for (const encoding of encodings) {
+      try {
+        const profile = parseQzonePortraitResponse(new TextDecoder(encoding).decode(bytes), normalizedUin);
+        if (profile?.nickname && !profile.nickname.includes("\uFFFD")) return profile;
+      } catch {
+        // Try the other known encoding.
+      }
+    }
+  } catch {
+    // Profile metadata is optional; authenticated collection may continue.
+  }
+  return null;
 }
 
 function qzoneCookieScore(cookie) {
@@ -58,7 +126,9 @@ function analyzeQzoneCookies(cookies) {
   return {
     authenticated: Boolean(uin && sessionKeyCookie?.value),
     uin,
-    accountLabel: uin ? `QQ ••••${uin.slice(-4)}` : "",
+    accountLabel: uin ? `QQ ${uin}` : "",
+    nickname: "",
+    avatarUrl: qzoneAvatarUrl(uin),
     cookieCount: qqCookies.length,
   };
 }
@@ -75,7 +145,7 @@ function accountsPath() {
 
 function legacyAccount() {
   const now = new Date().toISOString();
-  return { id: LEGACY_ACCOUNT_ID, partition: QZONE_PARTITION, accountLabel: "QQ 账号", createdAt: now, lastUsedAt: now };
+  return { id: LEGACY_ACCOUNT_ID, partition: QZONE_PARTITION, uin: "", nickname: "", avatarUrl: "", accountLabel: "QQ 账号", createdAt: now, lastUsedAt: now };
 }
 
 function runtimePartition(accountId) {
@@ -87,12 +157,17 @@ function normalizeRegistry(value) {
   const accounts = (Array.isArray(input.accounts) ? input.accounts : []).flatMap((account) => {
     const id = String(account?.id || "");
     if (!/^(?:legacy|[0-9a-f-]{36})$/i.test(id)) return [];
+    const uin = normalizeUin(account?.uin);
+    const nickname = normalizeNickname(account?.nickname);
     return [{
       id,
       partition: runtimePartition(id),
-      accountLabel: (id === LEGACY_ACCOUNT_ID && ["", "当前账号", "QQ账号"].includes(String(account?.accountLabel || "")))
+      uin,
+      nickname,
+      avatarUrl: qzoneAvatarUrl(uin),
+      accountLabel: nickname || (uin ? `QQ ${uin}` : (id === LEGACY_ACCOUNT_ID && ["", "当前账号", "QQ账号"].includes(String(account?.accountLabel || ""))
         ? "QQ 账号"
-        : String(account?.accountLabel || "QQ 账号").slice(0, 40),
+        : String(account?.accountLabel || "QQ 账号").slice(0, 80))),
       createdAt: String(account?.createdAt || new Date().toISOString()),
       lastUsedAt: String(account?.lastUsedAt || new Date().toISOString()),
     }];
@@ -101,7 +176,7 @@ function normalizeRegistry(value) {
   const activeAccountId = accounts.some((account) => account.id === input.activeAccountId)
     ? String(input.activeAccountId)
     : accounts[0].id;
-  return { version: 2, activeAccountId, accounts };
+  return { version: 3, activeAccountId, accounts };
 }
 
 async function ensureAccountRegistry() {
@@ -128,7 +203,7 @@ async function ensureAccountRegistry() {
     await legacySession.clearStorageData().catch(() => undefined);
     await legacySession.clearCache().catch(() => undefined);
   }));
-  if (!stored || Number(stored.version) < 2 || persistentPartitions.size) await saveAccountRegistry();
+  if (!stored || Number(stored.version) < 3 || persistentPartitions.size) await saveAccountRegistry();
   return accountRegistry;
 }
 
@@ -207,17 +282,36 @@ async function inspectQzoneSession({ validate = false, accountId, account: suppl
   const account = suppliedAccount || await resolveAccount(accountId);
   const qzoneSession = session.fromPartition(account.partition, { cache: true });
   const cookies = await qzoneSession.cookies.get({});
-  const status = analyzeQzoneCookies(cookies);
-  const result = (!validate || !status.authenticated)
-    ? status
-    : { ...status, authenticated: await validateQzoneSession(status, cookies, qzoneSession) };
+  const cookieStatus = analyzeQzoneCookies(cookies);
+  const identityUin = cookieStatus.uin || normalizeUin(account.uin);
+  let result = {
+    ...cookieStatus,
+    uin: identityUin,
+    nickname: normalizeNickname(account.nickname),
+    avatarUrl: qzoneAvatarUrl(identityUin),
+    accountLabel: normalizeNickname(account.nickname) || (identityUin ? `QQ ${identityUin}` : account.accountLabel || "QQ 账号"),
+  };
+  if (validate && cookieStatus.authenticated) {
+    const authenticated = await validateQzoneSession(cookieStatus, cookies, qzoneSession);
+    const profile = authenticated ? await fetchQzoneProfile(cookieStatus.uin, qzoneSession) : null;
+    result = {
+      ...result,
+      authenticated,
+      nickname: profile?.nickname || result.nickname,
+      avatarUrl: profile?.avatarUrl || result.avatarUrl,
+      accountLabel: profile?.nickname || result.nickname || result.accountLabel,
+    };
+  }
   return { ...result, accountId: account.id };
 }
 
 function publicSessionStatus(status) {
   return {
     authenticated: Boolean(status?.authenticated),
-    accountLabel: status?.accountLabel || "",
+    uin: normalizeUin(status?.uin),
+    nickname: normalizeNickname(status?.nickname),
+    avatarUrl: qzoneAvatarUrl(status?.uin),
+    accountLabel: normalizeNickname(status?.nickname) || status?.accountLabel || "",
     accountId: status?.accountId || "",
   };
 }
@@ -227,12 +321,30 @@ async function updateAccountFromStatus(account, status, { makeActive = false } =
   const stored = registry.accounts.find((item) => item.id === account.id);
   if (!stored) registry.accounts.push(account);
   const target = registry.accounts.find((item) => item.id === account.id);
-  if (status?.accountLabel) target.accountLabel = status.accountLabel;
+  const uin = normalizeUin(status?.uin);
+  const nickname = normalizeNickname(status?.nickname);
+  if (uin) target.uin = uin;
+  if (nickname) target.nickname = nickname;
+  target.avatarUrl = qzoneAvatarUrl(target.uin);
+  target.accountLabel = target.nickname || (target.uin ? `QQ ${target.uin}` : status?.accountLabel || target.accountLabel || "QQ 账号");
   if (makeActive) {
     registry.activeAccountId = account.id;
     target.lastUsedAt = new Date().toISOString();
   }
   await saveAccountRegistry();
+}
+
+async function updateQzoneAccountProfile(accountId, profile = {}) {
+  const account = await resolveAccount(accountId);
+  await updateAccountFromStatus(account, profile);
+  const updated = await resolveAccount(account.id);
+  return {
+    id: updated.id,
+    uin: normalizeUin(updated.uin),
+    nickname: normalizeNickname(updated.nickname),
+    avatarUrl: qzoneAvatarUrl(updated.uin),
+    accountLabel: updated.nickname || (updated.uin ? `QQ ${updated.uin}` : updated.accountLabel || "QQ 账号"),
+  };
 }
 
 async function getQzoneRequestContext() {
@@ -275,11 +387,17 @@ async function listQzoneAccounts() {
   const registry = await ensureAccountRegistry();
   const accounts = (await Promise.all(registry.accounts.map(async (account) => {
     const status = await inspectQzoneSession({ account });
-    if (status.accountLabel && status.accountLabel !== account.accountLabel) account.accountLabel = status.accountLabel;
-    if (!status.uin && account.accountLabel === "QQ 账号") return null;
+    if (status.uin) account.uin = status.uin;
+    if (status.nickname) account.nickname = status.nickname;
+    account.avatarUrl = qzoneAvatarUrl(account.uin);
+    account.accountLabel = account.nickname || (account.uin ? `QQ ${account.uin}` : account.accountLabel || "QQ 账号");
+    if (!status.uin && !account.uin && account.accountLabel === "QQ 账号") return null;
     return {
       id: account.id,
-      accountLabel: status.accountLabel || account.accountLabel || "当前账号",
+      uin: normalizeUin(status.uin || account.uin),
+      nickname: normalizeNickname(status.nickname || account.nickname),
+      avatarUrl: qzoneAvatarUrl(status.uin || account.uin),
+      accountLabel: normalizeNickname(status.nickname || account.nickname) || status.accountLabel || account.accountLabel || "当前账号",
       authenticated: Boolean(status.authenticated),
       active: account.id === registry.activeAccountId,
     };
@@ -303,6 +421,7 @@ async function findRegisteredAccountByUin(uin, excludedAccountId) {
   const registry = await ensureAccountRegistry();
   for (const account of registry.accounts) {
     if (account.id === excludedAccountId) continue;
+    if (normalizeUin(account.uin) === normalizeUin(uin)) return account;
     const status = await inspectQzoneSession({ account });
     if (status.uin === uin) return account;
   }
@@ -320,7 +439,7 @@ async function openQzoneLogin(parentWindow, { force = false, addAccount = false 
 
   const newAccountId = addAccount ? randomUUID() : "";
   const account = addAccount
-    ? { id: newAccountId, partition: runtimePartition(newAccountId), accountLabel: "新账号", createdAt: new Date().toISOString(), lastUsedAt: new Date().toISOString() }
+    ? { id: newAccountId, partition: runtimePartition(newAccountId), uin: "", nickname: "", avatarUrl: "", accountLabel: "新账号", createdAt: new Date().toISOString(), lastUsedAt: new Date().toISOString() }
     : await resolveAccount();
   if (force) await clearQzoneCookies(account.id, account);
   if (!addAccount) {
@@ -404,7 +523,7 @@ async function openQzoneLogin(parentWindow, { force = false, addAccount = false 
       }
     };
     timer = setInterval(check, 1200);
-    loginWindow.on("closed", () => finish({ authenticated: false, accountLabel: "", accountId: "", cancelled: true }));
+    loginWindow.on("closed", () => finish({ authenticated: false, uin: "", nickname: "", avatarUrl: "", accountLabel: "", accountId: "", cancelled: true }));
     loginWindow.webContents.on("did-navigate", check);
     loginWindow.webContents.on("did-navigate-in-page", check);
     loginWindow.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedUrl, isMainFrame) => {
@@ -444,8 +563,11 @@ module.exports = {
   isAllowedQqUrl,
   listQzoneAccounts,
   openQzoneLogin,
+  parseQzonePortraitResponse,
   publicSessionStatus,
+  qzoneAvatarUrl,
   selectQzoneCookie,
   switchQzoneAccount,
+  updateQzoneAccountProfile,
   validateQzoneSession,
 };

@@ -55,13 +55,23 @@ function decodeEscapedHtml(value) {
     .replace(/\\\//g, "/"));
 }
 
+function normalizeQzoneMentions(value) {
+  return String(value || "").replace(/@\{([^{}\r\n]*)\}/g, (_match, fields) => {
+    const nickname = String(fields)
+      .match(/(?:^|,)\s*nick\s*:\s*([\s\S]*?)(?=,\s*(?:uin|who|auto)\s*:|$)/i)?.[1]
+      ?.trim();
+    return nickname ? `@${nickname}` : "@QQ好友";
+  });
+}
+
 function stripHtml(value) {
-  return decodeHtmlEntities(String(value || "")
+  const plainText = decodeHtmlEntities(String(value || "")
     .replace(/<script\b[\s\S]*?<\/script>/gi, " ")
     .replace(/<style\b[\s\S]*?<\/style>/gi, " ")
     .replace(/<br\s*\/?\s*>/gi, "\n")
     .replace(/<\/(?:p|div|li)>/gi, "\n")
-    .replace(/<[^>]+>/g, " "))
+    .replace(/<[^>]+>/g, " "));
+  return normalizeQzoneMentions(plainText)
     .replace(/[\t\r ]+/g, " ")
     .replace(/ *\n */g, "\n")
     .replace(/\n{3,}/g, "\n\n")
@@ -116,6 +126,172 @@ function normalizeExternalUrl(value) {
   } catch {
     return "";
   }
+}
+
+function collectObjectUrls(value, result = new Map(), depth = 0) {
+  if (depth > 6 || result.size >= 20 || value == null) return result;
+  if (typeof value === "string") {
+    for (const match of decodeHtmlEntities(value).matchAll(/https?:\/\/[^\s<>"'\\]+/gi)) {
+      const url = normalizeExternalUrl(match[0]);
+      if (!url || result.has(url)) continue;
+      let label = "外部链接";
+      try { label = new URL(url).hostname; } catch { /* Already normalized. */ }
+      result.set(url, { url, label });
+      if (result.size >= 20) break;
+    }
+    return result;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) collectObjectUrls(item, result, depth + 1);
+    return result;
+  }
+  if (typeof value === "object") {
+    for (const item of Object.values(value)) collectObjectUrls(item, result, depth + 1);
+  }
+  return result;
+}
+
+function emotionPictures(rawItem) {
+  const media = new Map();
+  const addPictures = (pictures) => {
+    for (const picture of Array.isArray(pictures) ? pictures : []) {
+      if (!picture || typeof picture !== "object") continue;
+      const sourceUrl = [picture.url1, picture.url3, picture.url2, picture.url, picture.pic_url]
+        .map(normalizeMediaUrl)
+        .find(Boolean);
+      if (!sourceUrl || media.has(sourceUrl)) continue;
+      media.set(sourceUrl, {
+        kind: "image",
+        sourceUrl,
+        width: Number(picture.width || picture.w || 0) || undefined,
+        height: Number(picture.height || picture.h || 0) || undefined,
+      });
+    }
+  };
+  addPictures(rawItem?.pic);
+  addPictures(rawItem?.rt_con?.pic);
+  return [...media.values()];
+}
+
+function emotionComments(rawItem) {
+  const comments = [];
+  const append = (items, parentId = null) => {
+    for (const item of Array.isArray(items) ? items : []) {
+      if (!item || typeof item !== "object") continue;
+      const text = stripHtml(item.content || item.con || "");
+      const id = String(item.tid || item.id || `${comments.length + 1}`);
+      if (text || item.name || item.nickname) {
+        comments.push({
+          id,
+          authorUin: String(item.uin || item.fuin || ""),
+          name: stripHtml(item.name || item.nickname || "") || "QQ 用户",
+          text,
+          isReply: Boolean(parentId),
+          parentId,
+          createdAt: String(item.createTime2 || item.created_time || item.create_time || ""),
+          source: "emotion_msglist_v6",
+        });
+      }
+      append(item.list_3 || item.replylist || item.replies, id);
+    }
+  };
+  append(rawItem?.commentlist);
+  return comments.slice(0, 1000);
+}
+
+function emotionLikes(rawItem) {
+  const candidates = [rawItem?.like_uin_info, rawItem?.likelist, rawItem?.__like]
+    .find(Array.isArray) || [];
+  const people = new Map();
+  for (const item of candidates) {
+    const uin = String(item?.fuin || item?.uin || "");
+    const name = stripHtml(item?.nick || item?.name || item?.nickname || "");
+    if (uin && name && !people.has(uin)) people.set(uin, { uin, name, source: "emotion_msglist_v6" });
+  }
+  return [...people.values()];
+}
+
+function parseEmotionItem(rawItem, ownerUin) {
+  const authorUin = String(rawItem?.uin || rawItem?.opuin || "");
+  if (ownerUin && authorUin && authorUin !== String(ownerUin)) return null;
+  const sourceId = String(rawItem?.tid || rawItem?.cur_key || rawItem?.key || "").trim();
+  if (!sourceId) return null;
+  const ownText = stripHtml(rawItem?.content || rawItem?.con || "");
+  const forwardedText = stripHtml(rawItem?.rt_con?.content || rawItem?.rt_con?.con || "");
+  const text = [ownText, forwardedText && forwardedText !== ownText ? `转发内容：${forwardedText}` : ""]
+    .filter(Boolean)
+    .join("\n\n");
+  const media = emotionPictures(rawItem);
+  const links = [...collectObjectUrls(rawItem).values()];
+  if (!text && !media.length && !links.length) return null;
+  const comments = emotionComments(rawItem);
+  const likes = emotionLikes(rawItem);
+  const createdSeconds = Number(rawItem?.created_time || rawItem?.createTime?.time || rawItem?.create_time || 0);
+  const originalAuthorUin = String(rawItem?.rt_uin || rawItem?.rt_con?.uin || "");
+  return {
+    sourceId,
+    type: "post",
+    createdAt: createdSeconds > 0 ? new Date(createdSeconds * 1000).toISOString() : "",
+    title: null,
+    text,
+    links,
+    location: stripHtml(rawItem?.lbs?.name || rawItem?.lbs?.idname || rawItem?.location || "") || null,
+    media,
+    comments,
+    likes,
+    metrics: {
+      commentCount: Number(rawItem?.cmtnum || rawItem?.commentnum || comments.length) || 0,
+      likeCount: Number(rawItem?.likenum || rawItem?.likecount || likes.length) || 0,
+      forwardCount: Number(rawItem?.fwdnum || rawItem?.forwardnum || 0) || 0,
+    },
+    sourceMeta: {
+      adapter: "emotion_cgi_msglist_v6",
+      parserVersion: 6,
+      authorNickname: stripHtml(rawItem?.name || rawItem?.nickname || ""),
+      sourceName: stripHtml(rawItem?.source_name || "") || null,
+      isForward: Boolean(rawItem?.rt_tid || forwardedText || originalAuthorUin),
+      originalSourceId: rawItem?.rt_tid ? String(rawItem.rt_tid) : null,
+      originalAuthorUin: originalAuthorUin && originalAuthorUin !== authorUin ? originalAuthorUin : null,
+    },
+  };
+}
+
+function parseMoodListPage(text, ownerUin, { offset = 0, count = 20 } = {}) {
+  const payload = parseJsonp(text);
+  const code = Number(payload?.code ?? -1);
+  if (code !== 0) {
+    const message = String(payload?.message || payload?.msg || "QQ 空间说说接口返回失败");
+    const error = new Error(code === -10000
+      ? "QQ 说说分类接口暂时繁忙，请稍后重试"
+      : isAuthenticationFailure(code)
+        ? "QQ 登录会话已失效，请重新扫码登录"
+        : `QQ 空间说说接口错误 ${code}：${message}`);
+    error.code = code === -10000 ? "QZONE_MOOD_RATE_LIMITED" : code;
+    error.businessCode = code;
+    throw error;
+  }
+  const rawItems = Array.isArray(payload?.msglist) ? payload.msglist : [];
+  const entries = rawItems.map((item) => parseEmotionItem(item, ownerUin)).filter(Boolean);
+  const totalCandidate = Number(payload?.total ?? payload?.total_count);
+  const total = Number.isFinite(totalCandidate) && totalCandidate >= 0 ? totalCandidate : null;
+  const nextOffset = Math.max(0, Number(offset) || 0) + rawItems.length;
+  const explicitMore = payload?.hasmore ?? payload?.has_more;
+  const hasMore = explicitMore == null
+    ? total == null ? rawItems.length >= Math.max(1, Number(count) || 20) : nextOffset < total
+    : truthyMore(explicitMore);
+  return {
+    adapter: "mood_list",
+    entries,
+    rawCount: rawItems.length,
+    statusCount: rawItems.length,
+    eligibleCount: entries.length,
+    appidCounts: { 311: rawItems.length },
+    hasMore: Boolean(hasMore && rawItems.length > 0),
+    cursor: hasMore && rawItems.length > 0 ? String(nextOffset) : "",
+    pageNumber: Math.floor(Math.max(0, Number(offset) || 0) / Math.max(1, Number(count) || 20)) + 1,
+    total,
+    offset: Math.max(0, Number(offset) || 0),
+  };
 }
 
 function extractExternalLinks(html) {
@@ -310,7 +486,7 @@ function parseFeedItem(rawItem, ownerUin) {
     metrics: { commentCount, likeCount },
     sourceMeta: {
       adapter: "feeds3_html_more",
-      parserVersion: 4,
+      parserVersion: 6,
       appid,
       typeId,
       isForward: typeId === "5" || Boolean(originalSourceId),
@@ -432,10 +608,13 @@ module.exports = {
   isAuthenticationFailure,
   normalizeMediaUrl,
   normalizeExternalUrl,
+  normalizeQzoneMentions,
+  parseEmotionItem,
   parseComments,
   parseFeedItem,
   parseFeeds3Page,
   parseJsonp,
+  parseMoodListPage,
   parseRawFeeds3Page,
   stripHtml,
 };

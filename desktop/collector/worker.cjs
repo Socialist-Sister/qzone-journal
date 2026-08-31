@@ -1,5 +1,5 @@
 const { ArchiveStore } = require("../archive/store.cjs");
-const { FEEDS3_PAGE_SIZE, abortableDelay, createCollectionPlan, downloadMedia, fetchMoodPage, probeSession } = require("./qzone-adapter.cjs");
+const { MOOD_PAGE_SIZE, abortableDelay, createCollectionPlan, downloadMedia, fetchMoodPage, probeSession } = require("./qzone-adapter.cjs");
 const { isAuthenticationFailure } = require("./qzone-parser.cjs");
 
 const parentPort = process.parentPort;
@@ -53,13 +53,16 @@ async function run(job) {
     const previousCheckpoint = await store.readCheckpoint();
     const initialization = await store.initialize({ ownerUin: job.ownerUin, jobId: job.jobId, options: job.options });
     counts = await store.summarize();
-    const canResume = !initialization.migrationRequired && ["collecting_posts", "cancelled", "failed", "partial"].includes(previousCheckpoint?.phase);
+    const previousAdapter = String(previousCheckpoint?.cursors?.postAdapter || "");
+    const canResume = !initialization.migrationRequired
+      && ["collecting_posts", "cancelled", "failed", "partial"].includes(previousCheckpoint?.phase)
+      && ["mood_list", "feeds3_personal"].includes(previousAdapter);
     let resumeCursor = canResume ? String(previousCheckpoint?.cursors?.posts || "") : "";
-    let resumeScope = canResume && Number(previousCheckpoint?.cursors?.postScope) === 0 ? 0 : 1;
+    let resumeAdapter = canResume ? previousAdapter : "mood_list";
     const lastFullScanAt = Date.parse(String(initialization.manifest.collection?.lastFullScanAt || ""));
     const fullScanDue = !Number.isFinite(lastFullScanAt) || Date.now() - lastFullScanAt >= 30 * 24 * 60 * 60 * 1000;
     incrementalMode = counts.entries > 0 && !canResume && !initialization.migrationRequired && !fullScanDue;
-    activeCursors = { posts: resumeCursor, postScope: resumeScope };
+    activeCursors = { posts: resumeCursor, postAdapter: resumeAdapter };
     throwIfCancelled();
     await store.writeCheckpoint({ jobId: job.jobId, phase: "session_check", cursors: activeCursors, counts });
 
@@ -76,15 +79,15 @@ async function run(job) {
       counts = await store.summarize();
       incrementalMode = false;
       resumeCursor = "";
-      resumeScope = 1;
-      activeCursors = { posts: "", postScope: 1 };
+      resumeAdapter = "mood_list";
+      activeCursors = { posts: "", postAdapter: resumeAdapter };
     }
     const plan = createCollectionPlan(job.options);
     throwIfCancelled();
     await store.writeDiagnostic("collection-plan", { items: plan });
     let cursor = resumeCursor;
-    let feedScope = resumeScope;
-    activeCursors = { posts: cursor, postScope: feedScope };
+    let postAdapter = resumeAdapter;
+    activeCursors = { posts: cursor, postAdapter };
     await store.writeCheckpoint({ jobId: job.jobId, phase: "adapter_ready", cursors: activeCursors, counts });
 
     const needsPostStream = job.options.items.some((item) => ["posts", "comments", "likes"].includes(item));
@@ -92,7 +95,6 @@ async function run(job) {
       let pageNumber = 0;
       let processedEntries = 0;
       let hasMore = true;
-      let usedScopeFallback = false;
       const seenCursors = new Set();
       while (hasMore && pageNumber < 500) {
         throwIfCancelled();
@@ -106,61 +108,28 @@ async function run(job) {
             throw error;
           }
           page = job.testMode
-            ? { entries: pageNumber === 1 ? job.testEntries || [] : [], rawCount: pageNumber === 1 ? (job.testEntries || []).length : 0, hasMore: Boolean(job.testAuthAfterPage && pageNumber === 1), cursor: pageNumber === 1 ? "test-page-2" : "" }
+            ? { adapter: "mood_list", entries: pageNumber === 1 ? job.testEntries || [] : [], rawCount: pageNumber === 1 ? (job.testEntries || []).length : 0, hasMore: Boolean(job.testAuthAfterPage && pageNumber === 1), cursor: pageNumber === 1 ? "20" : "", total: (job.testEntries || []).length }
             : await fetchMoodPage({
               uin: job.ownerUin,
               gTk: job.gTk,
               cursor,
-              count: FEEDS3_PAGE_SIZE,
-              scope: feedScope,
+              count: MOOD_PAGE_SIZE,
+              adapter: postAdapter,
               signal: activeAbortController.signal,
               resetStaleCursor: pageNumber === 1 && Boolean(resumeCursor),
             });
         } catch (error) {
           pageError = error;
         }
-        if (pageError && !job.testMode && isAuthenticationFailure(pageError?.code) && processedEntries > 0 && feedScope === 1 && !usedScopeFallback) {
-          emit("progress", {
-            jobId: job.jobId,
-            progress: 70,
-            phase: "switching_feed_scope",
-            message: "个人时间线后续页暂不可用，正在尝试兼容读取路径…",
-            changes,
-          });
-          try {
-            page = await fetchMoodPage({
-              uin: job.ownerUin,
-              gTk: job.gTk,
-              cursor: "",
-              count: FEEDS3_PAGE_SIZE,
-              scope: 0,
-              signal: activeAbortController.signal,
-              resetStaleCursor: false,
-            });
-            cursor = "";
-            feedScope = 0;
-            usedScopeFallback = true;
-            paginationTruncated = {
-              code: String(pageError.code),
-              pageNumber,
-              feedScope: 0,
-              usedScopeFallback: true,
-            };
-            seenCursors.clear();
-            page.diagnostic = { ...(page.diagnostic || {}), usedPaginationScopeFallback: true };
-            pageError = null;
-          } catch (fallbackError) {
-            pageError = fallbackError;
-          }
-        }
         if (pageError) {
-          if (isAuthenticationFailure(pageError?.code) && processedEntries > 0) {
-            paginationTruncated = { code: String(pageError.code), pageNumber, feedScope };
+          const recoverableBoundary = isAuthenticationFailure(pageError?.code) || pageError?.code === "QZONE_MOOD_RATE_LIMITED";
+          if (recoverableBoundary && processedEntries > 0) {
+            paginationTruncated = { code: String(pageError.code), pageNumber, postAdapter };
             await store.writeDiagnostic("pagination-truncated", {
               reason: "later_page_rejected",
               parserCode: String(pageError.code),
               pageNumber,
-              feedScope,
+              postAdapter,
               savedEntries: counts.entries,
             });
             hasMore = false;
@@ -168,7 +137,7 @@ async function run(job) {
           }
           throw pageError;
         }
-        feedScope = Number(page.requestScope) === 0 ? 0 : 1;
+        postAdapter = page.adapter === "feeds3_personal" ? "feeds3_personal" : "mood_list";
         if (page.resumeCursorReset) {
           await store.writeDiagnostic("resume-cursor-reset", {
             reason: "saved_cursor_rejected",
@@ -237,20 +206,29 @@ async function run(job) {
           && pageChanges.updated === 0
           && pageChanges.skipped === page.entries.length;
         if (reachedKnownPage) stoppedAtKnownPage = true;
-        const progress = Math.min(92, 30 + Math.round(62 * (1 - Math.exp(-pageNumber / 10))));
+        const completedInCategory = Number(page.offset || 0) + Number(page.rawCount || 0);
+        const progress = Number(page.total) > 0
+          ? Math.min(92, 30 + Math.round(62 * Math.min(1, completedInCategory / Number(page.total))))
+          : Math.min(92, 30 + Math.round(62 * (1 - Math.exp(-pageNumber / 10))));
+        const message = postAdapter === "mood_list"
+          ? `已归档 ${counts.entries} 条说说，正在读取说说分类第 ${pageNumber} 页${page.total !== null && Number.isFinite(Number(page.total)) ? `（共 ${page.total} 条）` : ""}…`
+          : `说说分类接口暂时繁忙，正在读取本人时间线第 ${pageNumber} 页（不会扫描好友动态）…`;
         emit("progress", {
           jobId: job.jobId,
           progress,
           phase: "collecting_posts",
-          message: `已导入 ${counts.entries} 条内容，正在处理第 ${pageNumber} 页…`,
+          message,
           changes,
         });
-        await store.writeCheckpoint({ jobId: job.jobId, phase: "collecting_posts", cursors: { posts: nextCursor, postScope: feedScope }, counts });
+        await store.writeCheckpoint({ jobId: job.jobId, phase: "collecting_posts", cursors: { posts: nextCursor, postAdapter }, counts });
         hasMore = Boolean(!reachedKnownPage && page.hasMore && nextCursor && nextCursor !== cursor && !seenCursors.has(nextCursor));
         if (nextCursor) seenCursors.add(nextCursor);
         cursor = nextCursor;
-        activeCursors = { posts: cursor, postScope: feedScope };
-        if (hasMore && !job.testMode) await abortableDelay(1200 + Math.floor(Math.random() * 600), activeAbortController.signal);
+        activeCursors = { posts: cursor, postAdapter };
+        if (hasMore && !job.testMode) {
+          const baseDelay = postAdapter === "mood_list" ? 450 : 1200;
+          await abortableDelay(baseDelay + Math.floor(Math.random() * 450), activeAbortController.signal);
+        }
       }
       if (hasMore) throw new Error("说说页数超过 500 页安全限制，已保存恢复点，可再次运行继续");
       if (!processedEntries && !counts.entries) await store.writeDiagnostic("empty-post-stream", { message: "接口成功返回，但没有找到本人可归档的说说" });

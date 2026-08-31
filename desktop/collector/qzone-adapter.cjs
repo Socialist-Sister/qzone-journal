@@ -1,9 +1,14 @@
 const { net } = require("electron");
-const { enrichFeeds3Cursor, isAuthenticationFailure, normalizeMediaUrl, parseFeeds3Page } = require("./qzone-parser.cjs");
+const { enrichFeeds3Cursor, isAuthenticationFailure, normalizeMediaUrl, parseFeeds3Page, parseMoodListPage } = require("./qzone-parser.cjs");
 
 const QZONE_USER_URL = (uin) => `https://user.qzone.qq.com/${encodeURIComponent(uin)}`;
 const FEEDS3_URL = "https://user.qzone.qq.com/proxy/domain/ic2.qzone.qq.com/cgi-bin/feeds/feeds3_html_more";
 const FEEDS3_PAGE_SIZE = 20;
+const MOOD_LIST_URLS = [
+  "https://user.qzone.qq.com/proxy/domain/taotao.qzone.qq.com/cgi-bin/emotion_cgi_msglist_v6",
+  "https://user.qzone.qq.com/proxy/domain/taotao.qq.com/cgi-bin/emotion_cgi_msglist_v6",
+];
+const MOOD_PAGE_SIZE = 20;
 
 function abortableDelay(milliseconds, signal) {
   return new Promise((resolve, reject) => {
@@ -17,16 +22,17 @@ function abortableDelay(milliseconds, signal) {
 }
 
 function buildFeeds3Url({ uin, gTk, cursor = "", count = FEEDS3_PAGE_SIZE, scope = 1 }) {
+  if (Number(scope) === 0) throw new Error("好友动态流不允许作为个人归档来源");
   // Checkpoints created by older builds can omit pagenum. Repair them before
   // the request so a later-page offset is never paired with pagenum=1.
   const requestCursor = enrichFeeds3Cursor(cursor);
   const cursorParams = new URLSearchParams(requestCursor);
   const params = new URLSearchParams({
     uin: String(uin),
-    scope: String(scope === 0 ? 0 : 1),
+    scope: "1",
     view: "1",
     daylist: "",
-    uinlist: scope === 0 ? String(uin) : "",
+    uinlist: "",
     gid: "",
     flag: "1",
     filter: "all",
@@ -55,6 +61,25 @@ function buildFeeds3Url({ uin, gTk, cursor = "", count = FEEDS3_PAGE_SIZE, scope
   });
   if (requestCursor) params.set("externparam", requestCursor);
   return `${FEEDS3_URL}?${params}`;
+}
+
+function buildMoodListUrl({ uin, gTk, cursor = "", count = MOOD_PAGE_SIZE, endpoint = MOOD_LIST_URLS[0] }) {
+  const offset = Math.max(0, Number.parseInt(String(cursor || "0"), 10) || 0);
+  const params = new URLSearchParams({
+    uin: String(uin),
+    ftype: "0",
+    sort: "0",
+    pos: String(offset),
+    num: String(count),
+    replynum: "100",
+    g_tk: String(gTk),
+    callback: "_preloadCallback",
+    code_version: "1",
+    format: "jsonp",
+    need_private_comment: "1",
+    _t: String(Date.now()),
+  });
+  return `${endpoint}?${params}`;
 }
 
 async function fetchMoodPageOnce({ uin, gTk, cursor = "", count = FEEDS3_PAGE_SIZE, signal, scope = 1 }, dependencies = {}) {
@@ -96,9 +121,11 @@ async function fetchMoodPageOnce({ uin, gTk, cursor = "", count = FEEDS3_PAGE_SI
       if ((page.eligibleCount ?? page.rawCount) > 0 && page.entries.length === 0) throw new Error("QQ 空间返回了说说，但当前版本无法解析；已停止以避免生成空档案");
       return {
         ...page,
-        requestScope: scope === 0 ? 0 : 1,
+        adapter: "feeds3_personal",
+        requestScope: 1,
         diagnostic: {
-          requestScope: scope === 0 ? 0 : 1,
+          adapter: "feeds3_personal",
+          requestScope: 1,
           httpStatus: response.status,
           contentType: String(response.headers.get("content-type") || "").split(";", 1)[0],
           responseBytes: Buffer.byteLength(body),
@@ -126,43 +153,99 @@ async function fetchMoodPageOnce({ uin, gTk, cursor = "", count = FEEDS3_PAGE_SI
   throw lastError || new Error("说说接口请求失败");
 }
 
-async function fetchMoodPage(options, fetchPage = fetchMoodPageOnce) {
-  let primary;
+async function fetchMoodCategoryPageOnce({ uin, gTk, cursor = "", count = MOOD_PAGE_SIZE, signal }, dependencies = {}) {
+  const fetchRequest = dependencies.fetch || net.fetch;
+  const delay = dependencies.delay || abortableDelay;
+  let lastError;
+  for (let attempt = 0; attempt < MOOD_LIST_URLS.length; attempt += 1) {
+    try {
+      const url = buildMoodListUrl({ uin, gTk, cursor, count, endpoint: MOOD_LIST_URLS[attempt] });
+      const response = await fetchRequest(url, {
+        method: "GET",
+        credentials: "include",
+        redirect: "follow",
+        signal,
+        headers: {
+          accept: "application/json, text/javascript, */*; q=0.01",
+          "accept-language": "zh-CN,zh;q=0.9",
+          referer: `${QZONE_USER_URL(uin)}/311`,
+          "x-requested-with": "XMLHttpRequest",
+        },
+      });
+      const body = await response.text();
+      if (!response.ok) throw new Error(`说说分类接口请求失败（HTTP ${response.status}）`);
+      let page;
+      try {
+        page = parseMoodListPage(body, String(uin), { offset: Number(cursor) || 0, count });
+      } catch (error) {
+        error.diagnostic = {
+          adapter: "mood_list",
+          httpStatus: response.status,
+          finalHost: (() => { try { return new URL(response.url).hostname; } catch { return ""; } })(),
+          contentType: String(response.headers.get("content-type") || "").split(";", 1)[0],
+          responseBytes: Buffer.byteLength(body),
+          parserCode: String(error?.code || "parse_failed"),
+        };
+        throw error;
+      }
+      if (page.rawCount > 0 && page.entries.length === 0) throw new Error("QQ 空间返回了说说，但当前版本无法解析；已停止以避免生成空档案");
+      return {
+        ...page,
+        diagnostic: {
+          adapter: "mood_list",
+          httpStatus: response.status,
+          contentType: String(response.headers.get("content-type") || "").split(";", 1)[0],
+          responseBytes: Buffer.byteLength(body),
+          rawCount: page.rawCount,
+          statusCount: page.statusCount,
+          eligibleCount: page.eligibleCount,
+          normalizedCount: page.entries.length,
+          total: page.total,
+          offset: page.offset,
+          hasMore: page.hasMore,
+        },
+      };
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      if (isAuthenticationFailure(error?.code)) throw error;
+      lastError = error;
+      if (attempt < MOOD_LIST_URLS.length - 1) await delay(850 + Math.floor(Math.random() * 300), signal);
+    }
+  }
+  throw lastError || new Error("说说分类接口请求失败");
+}
+
+async function fetchMoodPage(options, dependencies = {}) {
+  if (options.adapter === "feeds3_personal") {
+    return fetchMoodPageOnce({ ...options, scope: 1 }, dependencies);
+  }
   try {
-    primary = await fetchPage(options);
+    return await fetchMoodCategoryPageOnce(options, dependencies);
   } catch (error) {
     const canResetStaleCursor = Boolean(
       options.resetStaleCursor
       && options.cursor
       && isAuthenticationFailure(error?.code),
     );
-    if (!canResetStaleCursor) throw error;
-    primary = await fetchPage({
-      ...options,
-      cursor: "",
-      scope: 1,
-      resetStaleCursor: false,
-    });
-    primary.resumeCursorReset = true;
-    primary.diagnostic = {
-      ...(primary.diagnostic || {}),
-      resumeCursorReset: true,
-      rejectedCursorCode: String(error.code),
-    };
-  }
-  const startedFromFirstPage = !options.cursor || primary.resumeCursorReset;
-  if (startedFromFirstPage && (primary.requestScope ?? options.scope ?? 1) === 1 && primary.rawCount === 0) {
-    const fallback = await fetchPage({ ...options, cursor: "", scope: 0, resetStaleCursor: false });
-    fallback.diagnostic.usedEmptyPersonalFeedFallback = true;
-    fallback.diagnostic.personalFeedRawCount = primary.rawCount;
-    if (primary.resumeCursorReset) {
-      fallback.resumeCursorReset = true;
-      fallback.diagnostic.resumeCursorReset = true;
-      fallback.diagnostic.rejectedCursorCode = primary.diagnostic.rejectedCursorCode;
+    if (canResetStaleCursor) {
+      const restarted = await fetchMoodCategoryPageOnce({ ...options, cursor: "", resetStaleCursor: false }, dependencies);
+      restarted.resumeCursorReset = true;
+      restarted.diagnostic = {
+        ...(restarted.diagnostic || {}),
+        resumeCursorReset: true,
+        rejectedCursorCode: String(error.code),
+      };
+      return restarted;
     }
+    if (error?.code !== "QZONE_MOOD_RATE_LIMITED" || options.cursor) throw error;
+    const fallback = await fetchMoodPageOnce({ ...options, cursor: "", scope: 1 }, dependencies);
+    fallback.diagnostic = {
+      ...(fallback.diagnostic || {}),
+      categoryRateLimited: true,
+      categoryBusinessCode: String(error.businessCode || -10000),
+    };
     return fallback;
   }
-  return primary;
 }
 
 async function downloadMedia({ sourceUrl, uin, signal }) {
@@ -224,8 +307,8 @@ function createCollectionPlan(options) {
   return options.items.map((item) => ({
     id: item,
     status: item === "albums" ? "deferred" : "ready",
-    description: item === "posts" ? "说说与日志" : item === "albums" ? "相册与媒体" : item === "comments" ? "评论与回复" : "点赞记录",
+    description: item === "posts" ? "说说正文与配图" : item === "albums" ? "相册与媒体" : item === "comments" ? "评论与回复" : "点赞记录",
   }));
 }
 
-module.exports = { FEEDS3_PAGE_SIZE, abortableDelay, buildFeeds3Url, createCollectionPlan, downloadMedia, fetchMoodPage, fetchMoodPageOnce, probeSession };
+module.exports = { FEEDS3_PAGE_SIZE, MOOD_PAGE_SIZE, abortableDelay, buildFeeds3Url, buildMoodListUrl, createCollectionPlan, downloadMedia, fetchMoodCategoryPageOnce, fetchMoodPage, fetchMoodPageOnce, probeSession };

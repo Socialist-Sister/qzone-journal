@@ -1,7 +1,7 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
-const { parseFeeds3Page } = require("../desktop/collector/qzone-parser.cjs");
-const { buildFeeds3Url, fetchMoodPageOnce } = require("../desktop/collector/qzone-adapter.cjs");
+const { normalizeQzoneMentions, parseFeeds3Page, parseMoodListPage } = require("../desktop/collector/qzone-parser.cjs");
+const { buildFeeds3Url, buildMoodListUrl, fetchMoodPage, fetchMoodPageOnce } = require("../desktop/collector/qzone-adapter.cjs");
 
 test("feeds3 parser normalizes a titleless post, media, comments and visible likes", () => {
   const html = `<div id="feed_12345678_311_0_1700000000_0_1">
@@ -28,6 +28,106 @@ test("feeds3 parser normalizes a titleless post, media, comments and visible lik
 test("feeds3 parser reports authentication failures", () => {
   assert.throws(() => parseFeeds3Page('_Callback({"code":-3000,"message":"need login"});', "12345678"), /重新扫码登录/);
   assert.throws(() => parseFeeds3Page('_Callback({"code":-10006,"message":"login expired"});', "12345678"), /重新扫码登录/);
+});
+
+test("mood category parser normalizes own text, pictures, forwards, comments and totals", () => {
+  const payload = `_preloadCallback(${JSON.stringify({
+    code: 0,
+    total: 3,
+    msglist: [{
+      tid: "mood-1",
+      uin: 12345678,
+      name: "归档用户",
+      content: "我转发时写下的内容[em]e10264[/em] @{uin:983109480,nick:Lorrinius.Asuka.,who:1,auto:1}",
+      created_time: 1700000000,
+      cmtnum: 2,
+      likenum: 3,
+      fwdnum: 1,
+      source_name: "iPhone",
+      pic: [{ url1: "https://photogz.photo.store.qq.com/original.jpg", width: 1080, height: 720 }],
+      rt_tid: "origin-9",
+      rt_uin: 87654321,
+      rt_con: { content: "原动态正文", url: "https://www.bilibili.com/video/BV1Test" },
+      commentlist: [{ tid: "comment-1", uin: 90001, name: "小周", content: "收到 @{uin:90002,nick:阿程 同学,who:1,auto:1}", list_3: [{ tid: "reply-1", uin: 90002, name: "阿程", content: "回复一下" }] }],
+      like_uin_info: [{ fuin: 90001, nick: "小周" }],
+    }, {
+      tid: "mood-2",
+      uin: 12345678,
+      content: "第二条",
+      created_time: 1699999999,
+    }],
+  })});`;
+  const page = parseMoodListPage(payload, "12345678", { offset: 0, count: 2 });
+  assert.equal(page.adapter, "mood_list");
+  assert.equal(page.entries.length, 2);
+  assert.equal(page.entries[0].title, null);
+  assert.equal(page.entries[0].text, "我转发时写下的内容[em]e10264[/em] @Lorrinius.Asuka.\n\n转发内容：原动态正文");
+  assert.equal(page.entries[0].media.length, 1);
+  assert.equal(page.entries[0].media[0].width, 1080);
+  assert.deepEqual(page.entries[0].links, [{ url: "https://www.bilibili.com/video/BV1Test", label: "www.bilibili.com" }]);
+  assert.equal(page.entries[0].comments.length, 2);
+  assert.equal(page.entries[0].comments[0].text, "收到 @阿程 同学");
+  assert.equal(page.entries[0].comments[1].isReply, true);
+  assert.equal(page.entries[0].likes[0].name, "小周");
+  assert.equal(page.entries[0].metrics.likeCount, 3);
+  assert.equal(page.entries[0].sourceMeta.parserVersion, 6);
+  assert.equal(page.total, 3);
+  assert.equal(page.cursor, "2");
+  assert.equal(page.hasMore, true);
+});
+
+test("QQ mention tokens keep only nicknames and never expose internal UIN fields", () => {
+  assert.equal(
+    normalizeQzoneMentions("和 @{uin:983109480,nick:Lorrinius.Asuka.,who:1,auto:1} 一起出门"),
+    "和 @Lorrinius.Asuka. 一起出门",
+  );
+  assert.equal(
+    normalizeQzoneMentions("@{who:1,nick:昵称,带逗号,uin:42,auto:1} @{uin:7,who:1}"),
+    "@昵称,带逗号 @QQ好友",
+  );
+});
+
+test("mood category parser rejects another publisher and identifies rate limiting", () => {
+  const other = `_preloadCallback(${JSON.stringify({ code: 0, total: 1, msglist: [{ tid: "other", uin: 87654321, content: "好友内容" }] })});`;
+  const page = parseMoodListPage(other, "12345678", { offset: 0, count: 20 });
+  assert.equal(page.entries.length, 0);
+  assert.throws(
+    () => parseMoodListPage('_preloadCallback({"code":-10000,"message":"busy"});', "12345678"),
+    (error) => error.code === "QZONE_MOOD_RATE_LIMITED",
+  );
+});
+
+test("mood category request uses the owner's category and numeric offset", () => {
+  const url = new URL(buildMoodListUrl({ uin: "12345678", gTk: 456, cursor: "40", count: 20 }));
+  assert.match(url.hostname, /qzone\.qq\.com$/);
+  assert.match(url.pathname, /emotion_cgi_msglist_v6$/);
+  assert.equal(url.searchParams.get("uin"), "12345678");
+  assert.equal(url.searchParams.get("pos"), "40");
+  assert.equal(url.searchParams.get("num"), "20");
+});
+
+test("category rate limiting falls back only to the personal scope=1 timeline", async () => {
+  const requested = [];
+  const response = (url, body) => ({
+    ok: true,
+    status: 200,
+    url,
+    headers: { get: () => "application/json" },
+    text: async () => body,
+  });
+  const page = await fetchMoodPage({ uin: "12345678", gTk: 123, cursor: "" }, {
+    fetch: async (url) => {
+      requested.push(url);
+      if (url.includes("emotion_cgi_msglist_v6")) return response(url, '_preloadCallback({"code":-10000,"message":"busy"});');
+      return response(url, '_Callback({"code":0,"data":{"main":{"hasMoreFeeds":false},"data":[]}});');
+    },
+    delay: async () => undefined,
+  });
+  assert.equal(page.adapter, "feeds3_personal");
+  const feedsRequest = new URL(requested.find((url) => url.includes("feeds3_html_more")));
+  assert.equal(feedsRequest.searchParams.get("scope"), "1");
+  assert.equal(feedsRequest.searchParams.get("uinlist"), "");
+  assert.equal(page.diagnostic.categoryRateLimited, true);
 });
 
 test("feeds3 parser accepts QQ JavaScript-style hexadecimal escapes without evaluating the response", () => {
@@ -58,7 +158,7 @@ test("feeds3 parser removes escaped template whitespace and excludes non-status 
   const page = parseFeeds3Page(payload, "12345678");
   assert.equal(page.entries.length, 1);
   assert.equal(page.entries[0].text, "真正的正文\n第二行");
-  assert.equal(page.entries[0].sourceMeta.parserVersion, 4);
+  assert.equal(page.entries[0].sourceMeta.parserVersion, 6);
   assert.match(page.cursor, /pagenum=2/);
   assert.equal(page.eligibleCount, 1);
 });
@@ -74,10 +174,8 @@ test("feeds3 request repairs a legacy checkpoint cursor before resuming", () => 
   assert.equal(url.searchParams.get("refresh"), "0");
 });
 
-test("feeds3 request can fall back to a filtered friend feed", () => {
-  const url = new URL(buildFeeds3Url({ uin: "12345678", gTk: 123, scope: 0 }));
-  assert.equal(url.searchParams.get("scope"), "0");
-  assert.equal(url.searchParams.get("uinlist"), "12345678");
+test("personal archives reject the scope=0 friend feed", () => {
+  assert.throws(() => buildFeeds3Url({ uin: "12345678", gTk: 123, scope: 0 }), /好友动态流不允许/);
 });
 
 test("feeds3 diagnostics distinguish status posts from another author", () => {

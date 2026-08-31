@@ -1,4 +1,5 @@
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
 const path = require("node:path");
 const { app, BrowserWindow, ipcMain } = require("electron");
 
@@ -16,8 +17,8 @@ async function run() {
   let mockAccounts = {
     activeAccountId: "account-a",
     accounts: [
-      { id: "account-a", accountLabel: "QQ ••••5678", authenticated: true, active: true, hasArchive: true, archivePath: "C:\\Users\\Tester\\Documents\\空间备份\\QQ-5678-test" },
-      { id: "account-b", accountLabel: "QQ ••••2468", authenticated: false, active: false, hasArchive: true, archivePath: "C:\\Users\\Tester\\Documents\\空间备份\\QQ-2468-test" },
+      { id: "account-a", uin: "12345678", nickname: "林屿", avatarUrl: "https://q.qlogo.cn/headimg_dl?dst_uin=12345678&spec=100", accountLabel: "林屿", authenticated: true, active: true, hasArchive: true, archivePath: "C:\\Users\\Tester\\Documents\\空间备份\\QQ-5678-test" },
+      { id: "account-b", uin: "87652468", nickname: "小屿测试", avatarUrl: "https://q.qlogo.cn/headimg_dl?dst_uin=87652468&spec=100", accountLabel: "小屿测试", authenticated: false, active: false, hasArchive: true, archivePath: "C:\\Users\\Tester\\Documents\\空间备份\\QQ-2468-test" },
     ],
   };
   ipcMain.handle("desktop:ai:get-config", () => mockAiConfig);
@@ -59,7 +60,7 @@ async function run() {
     await new Promise((resolve) => setTimeout(resolve, 30));
     return { ok: true, message: "OK" };
   });
-  ipcMain.handle("desktop:qzone:get-session-status", () => ({ authenticated: false, accountLabel: "" }));
+  ipcMain.handle("desktop:qzone:get-session-status", () => ({ authenticated: false, uin: "", nickname: "", avatarUrl: "", accountLabel: "" }));
   ipcMain.handle("desktop:qzone:list-accounts", () => mockAccounts);
   ipcMain.handle("desktop:qzone:switch-account", (_event, accountId) => {
     mockAccounts = {
@@ -67,17 +68,17 @@ async function run() {
       accounts: mockAccounts.accounts.map((account) => ({ ...account, active: account.id === accountId })),
     };
     const active = mockAccounts.accounts.find((account) => account.id === accountId);
-    return { ...mockAccounts, sessionStatus: { authenticated: active.authenticated, accountLabel: active.accountLabel, accountId } };
+    return { ...mockAccounts, sessionStatus: { authenticated: active.authenticated, uin: active.uin, nickname: active.nickname, avatarUrl: active.avatarUrl, accountLabel: active.accountLabel, accountId } };
   });
   ipcMain.handle("desktop:qzone:add-account", () => {
     mockAccounts = {
       activeAccountId: "account-c",
       accounts: [
         ...mockAccounts.accounts.map((account) => ({ ...account, active: false })),
-        { id: "account-c", accountLabel: "QQ ••••1357", authenticated: true, active: true, hasArchive: true, archivePath: "D:\\QQ空间档案\\QQ-1357-test" },
+        { id: "account-c", uin: "24681357", nickname: "新账号", avatarUrl: "https://q.qlogo.cn/headimg_dl?dst_uin=24681357&spec=100", accountLabel: "新账号", authenticated: true, active: true, hasArchive: true, archivePath: "D:\\QQ空间档案\\QQ-1357-test" },
       ],
     };
-    return { ...mockAccounts, sessionStatus: { authenticated: true, accountLabel: "QQ ••••1357", accountId: "account-c" } };
+    return { ...mockAccounts, sessionStatus: { authenticated: true, uin: "24681357", nickname: "新账号", avatarUrl: "https://q.qlogo.cn/headimg_dl?dst_uin=24681357&spec=100", accountLabel: "新账号", accountId: "account-c" } };
   });
   ipcMain.handle("desktop:qzone:delete-account", (_event, accountId) => {
     deleteAccountCalls += 1;
@@ -92,7 +93,7 @@ async function run() {
   });
   ipcMain.handle("desktop:qzone:open-login", (_event, input) => {
     loginCalls.push(input || {});
-    return { authenticated: true, accountLabel: "QQ ••••5678" };
+    return { authenticated: true, uin: "12345678", nickname: "林屿", avatarUrl: "https://q.qlogo.cn/headimg_dl?dst_uin=12345678&spec=100", accountLabel: "林屿" };
   });
   ipcMain.handle("desktop:qzone:start-collection", (event) => {
     collectionAttempts += 1;
@@ -106,28 +107,36 @@ async function run() {
         event.sender.send("desktop:qzone:collector-event", { type: "complete", jobId, progress: 100, phase: "collection_partial", message: "已保存当前可读取范围", archivePath: "C:\\Users\\Tester\\Documents\\空间备份\\QQ-5678-test", schemaVersion: 1, mode: "partial", truncated: true, changes: { added: 1, updated: 0, skipped: 2 }, counts: { entries: 1, media: 0, comments: 1, likes: 1 } });
       }, 90);
     }
-    return { jobId, archivePath: "C:\\Users\\Tester\\Documents\\空间备份\\QQ-12345678", accountLabel: "QQ ••••5678" };
+    return { jobId, archivePath: "C:\\Users\\Tester\\Documents\\空间备份\\QQ-12345678", uin: "12345678", nickname: "林屿", avatarUrl: "https://q.qlogo.cn/headimg_dl?dst_uin=12345678&spec=100", accountLabel: "林屿" };
   });
   ipcMain.handle("desktop:qzone:read-archive", () => ({
     id: "local-test",
     isDemo: false,
-    profileName: "QQ ••••5678的空间",
+    ownerUin: "12345678",
+    ownerNickname: "林屿",
+    avatarUrl: "https://q.qlogo.cn/headimg_dl?dst_uin=12345678&spec=100",
+    profileName: "林屿的空间",
     lastBackupAt: "2026-08-29T10:00:00+08:00",
     importedAt: "2026年8月29日 10:00",
     range: "2026—2026",
     integrity: { needsRepair: false, corruptEntries: [], missingMedia: [], unsafeMedia: [] },
-    entries: [{ id: "real-post-1", type: "post", date: "2026-08-29T10:00:00+08:00", displayDate: "2026年8月29日 10:00", title: null, text: "真实归档流程测试", links: [{ url: "https://www.bilibili.com/video/BV1Test", label: "转发的视频" }], images: [], likes: ["小周"], comments: [{ name: "小周", text: "测试评论" }] }],
+    entries: [
+      { id: "real-post-1", type: "post", date: "2026-08-29T10:00:00+08:00", displayDate: "2026年8月29日 10:00", title: null, text: "真实归档流程测试 @{uin:983109480,nick:Lorrinius.Asuka.,who:1,auto:1} " + "这是一段用于验证详情滚动的长内容。".repeat(160) + " [em]e10264[/em]", links: [{ url: "https://www.bilibili.com/video/BV1Test", label: "转发的视频" }], images: ["./assets/demo/spring-blossom.png"], likes: ["小周"], comments: [{ name: "小周", text: "测试评论 [em]e10319[/em] @{uin:90002,nick:阿程,who:1,auto:1}" }] },
+      { id: "real-post-2", type: "post", date: "2026-08-28T10:00:00+08:00", displayDate: "2026年8月28日 10:00", title: null, text: "一条用于验证页面滚动接力的简短说说。", links: [], images: [], likes: [], comments: [] },
+      { id: "real-gallery", type: "post", date: "2026-08-27T12:00:00+08:00", displayDate: "2026年8月27日 12:00", title: null, text: "多图查看器交互测试", links: [], images: ["./assets/demo/spring-blossom.png", "./assets/demo/riverside.png", "./assets/demo/seaside.png"], likes: [], comments: [] },
+      ...Array.from({ length: 7 }, (_, index) => ({ id: "real-post-extra-" + index, type: "post", date: "2026-08-27T10:00:00+08:00", displayDate: "2026年8月27日 10:00", title: null, text: "用于让档案外层页面保持可滚动的测试内容 " + (index + 1), links: [], images: [], likes: [], comments: [] })),
+    ],
   }));
   ipcMain.handle("desktop:qzone:repair-archive", () => {
     repairCalls += 1;
     return { repaired: true, quarantinedEntries: 0, mediaMarkedForRedownload: 0 };
   });
   ipcMain.handle("desktop:qzone:cancel-collection", () => ({ cancelled: true }));
-  ipcMain.handle("desktop:app:info", () => ({ name: "空间备份", version: "0.3.3-alpha", platform: process.platform, packaged: false }));
+  ipcMain.handle("desktop:app:info", () => ({ name: "空间备份", version: "0.4.0-alpha", platform: process.platform, packaged: false }));
   const window = new BrowserWindow({
     width: 1120,
     height: 720,
-    show: false,
+    show: Boolean(process.env.QZONE_VISUAL_CAPTURE_DIR),
     webPreferences: {
       preload: path.join(__dirname, "..", "desktop", "preload.cjs"),
       contextIsolation: true,
@@ -189,28 +198,33 @@ async function run() {
     document.querySelector(".account-trigger")?.click();
     await new Promise((resolve) => setTimeout(resolve, 20));
     const listedAccounts = document.querySelectorAll(".account-menu-item").length;
-    [...document.querySelectorAll(".account-menu-item")].find((button) => button.textContent.includes("2468"))?.click();
+    [...document.querySelectorAll(".account-menu-item")].find((button) => button.textContent.includes("87652468"))?.click();
     await new Promise((resolve) => setTimeout(resolve, 40));
-    const switched = document.querySelector(".account-trigger")?.textContent.includes("2468") === true;
+    const switched = document.querySelector(".account-trigger")?.textContent.includes("小屿测试") === true;
     document.querySelector(".account-trigger")?.click();
     await new Promise((resolve) => setTimeout(resolve, 20));
     document.querySelector(".account-add")?.click();
     await new Promise((resolve) => setTimeout(resolve, 40));
-    const added = document.querySelector(".account-trigger")?.textContent.includes("1357") === true;
+    const added = document.querySelector(".account-trigger")?.textContent.includes("新账号") === true;
     document.querySelector(".account-trigger")?.click();
     await new Promise((resolve) => setTimeout(resolve, 20));
-    document.querySelector('[aria-label*="1357"]')?.click();
+    document.querySelector('[aria-label*="新账号"]')?.click();
     await new Promise((resolve) => setTimeout(resolve, 20));
-    const hasDeleteConfirmation = document.body.innerText.includes("删除 QQ ••••1357 的全部数据") && document.body.innerText.includes("QQ-1357-test");
+    const hasDeleteConfirmation = document.body.innerText.includes("删除 新账号 的全部数据") && document.body.innerText.includes("QQ-1357-test");
     [...document.querySelectorAll("button")].find((button) => button.textContent.trim() === "删除全部数据")?.click();
     await new Promise((resolve) => setTimeout(resolve, 60));
+    document.querySelector(".account-trigger")?.click();
+    await new Promise((resolve) => setTimeout(resolve, 20));
     return {
       listedAccounts,
       switched,
       added,
       hasDeleteConfirmation,
-      deletedAccount: document.querySelector(".account-trigger")?.textContent.includes("1357") !== true,
-      keepsMaskedLabels: !document.body.innerText.includes("12345678")
+      deletedAccount: !document.body.innerText.includes("QQ 24681357"),
+      showsFullQqNumbers: document.body.innerText.includes("QQ 12345678") && document.body.innerText.includes("QQ 87652468"),
+      showsNicknames: document.body.innerText.includes("林屿") && document.body.innerText.includes("小屿测试"),
+      usesOfficialAvatarImages: [...document.querySelectorAll(".account-avatar-image")].some((image) => image.src.includes("q.qlogo.cn/headimg_dl")),
+      hasNoMaskedAccountLabels: !document.body.innerText.includes("••••")
     };
   })()`);
   process.stdout.write(`Electron account flow: ${JSON.stringify(accountFlow)}\n`);
@@ -220,7 +234,19 @@ async function run() {
   assert.equal(accountFlow.hasDeleteConfirmation, true);
   assert.equal(accountFlow.deletedAccount, true);
   assert.equal(deleteAccountCalls, 1);
-  assert.equal(accountFlow.keepsMaskedLabels, true);
+  assert.equal(accountFlow.showsFullQqNumbers, true);
+  assert.equal(accountFlow.showsNicknames, true);
+  assert.equal(accountFlow.usesOfficialAvatarImages, true);
+  assert.equal(accountFlow.hasNoMaskedAccountLabels, true);
+  if (process.env.QZONE_VISUAL_CAPTURE_DIR) {
+    const captureDirectory = path.resolve(process.env.QZONE_VISUAL_CAPTURE_DIR);
+    fs.mkdirSync(captureDirectory, { recursive: true });
+    await window.webContents.executeJavaScript(`(async () => {
+      if (!document.querySelector(".account-menu")) document.querySelector(".account-trigger")?.click();
+      await new Promise((resolve) => setTimeout(resolve, 80));
+    })()`);
+    await window.capturePage().then((image) => fs.writeFileSync(path.join(captureDirectory, "account-profile-menu.png"), image.toPNG()));
+  }
 
   const directoryFlow = await window.webContents.executeJavaScript(`(async () => {
     const findButton = (label) => [...document.querySelectorAll("button")].find((button) => button.textContent.trim() === label);
@@ -296,7 +322,64 @@ async function run() {
     findButton("打开我的档案")?.click();
     await new Promise((resolve) => setTimeout(resolve, 40));
     result.openedRealArchive = document.body.innerText.includes("真实归档流程测试");
+    result.showsNicknameProfile = document.body.innerText.includes("林屿的空间");
     result.showsExternalLink = document.querySelector('.detail-links a[href^="https://www.bilibili.com/"]')?.textContent.includes("转发的视频") === true;
+    const detail = document.querySelector(".archive-detail");
+    const detailStyle = getComputedStyle(detail);
+    const detailBottomGap = window.innerHeight - detail.getBoundingClientRect().bottom;
+    result.longDetailScrolls = detail.classList.contains("is-scrollable") && detailStyle.overflowY === "auto" && detail.scrollHeight > detail.clientHeight;
+    result.detailUsesViewportLimit = Math.abs(parseFloat(detailStyle.maxHeight) - (window.innerHeight - detail.getBoundingClientRect().top - 12)) <= 1;
+    result.detailKeepsBottomGap = Math.abs(detailBottomGap - 12) <= 2;
+    result.replacedQqEmotion = document.querySelectorAll(".qq-emotion, .qq-emotion-fallback").length >= 2 && !document.body.innerText.includes("[em]e10264[/em]");
+    result.qqEmotionUsesOfficialAsset = document.querySelector('.qq-emotion[src*="qzonestyle.gtimg.cn/qzone/em/e10264.gif"]') !== null;
+    result.normalizedQqMentions = document.body.innerText.includes("@Lorrinius.Asuka.")
+      && document.body.innerText.includes("@阿程")
+      && !document.body.innerText.includes("@{uin:");
+    document.querySelector(".media-count-1 button")?.click();
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    const viewer = document.querySelector(".image-viewer");
+    const viewerStage = document.querySelector(".image-viewer-image-stage");
+    const viewerImage = document.querySelector(".image-viewer-image-stage > img");
+    const fittedImageRect = viewerImage.getBoundingClientRect();
+    const fittedStageRect = viewerStage.getBoundingClientRect();
+    result.singleImageCentered = Math.abs((fittedImageRect.left + fittedImageRect.right) / 2 - (fittedStageRect.left + fittedStageRect.right) / 2) <= 1;
+    result.singleImageUsesStage = fittedImageRect.width >= fittedStageRect.width - 1 && fittedImageRect.height >= fittedStageRect.height - 1;
+    result.viewerImageKeepsVerticalSafety = fittedImageRect.top >= fittedStageRect.top - 1 && fittedImageRect.bottom <= fittedStageRect.bottom + 1;
+    result.singleImageHasNoThumbnailStrip = viewer?.classList.contains("single-image") && !document.querySelector(".image-viewer-thumbnails");
+    viewerStage.dispatchEvent(new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY: -120, clientX: fittedStageRect.left + fittedStageRect.width / 2, clientY: fittedStageRect.top + fittedStageRect.height / 2 }));
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    result.viewerWheelZooms = Number(viewerImage.dataset.zoom) > 1;
+    viewerImage.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    result.viewerDoubleClickResets = Number(viewerImage.dataset.zoom) === 1;
+    document.querySelector('button[aria-label="关闭图片查看器"]')?.click();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const archiveScroller = document.querySelector(".utility-view");
+    archiveScroller.scrollTop = archiveScroller.scrollHeight;
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    document.querySelectorAll(".timeline-entry")[1]?.click();
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    const shortDetail = document.querySelector(".archive-detail");
+    const shortDetailStyle = getComputedStyle(shortDetail);
+    result.shortDetailLetsPageScroll = !shortDetail.classList.contains("is-scrollable")
+      && shortDetailStyle.overflowY === "auto"
+      && shortDetailStyle.overscrollBehaviorY === "auto";
+    const lateOverflowProbe = document.createElement("div");
+    lateOverflowProbe.setAttribute("data-late-overflow-probe", "true");
+    lateOverflowProbe.style.height = Math.ceil(parseFloat(shortDetailStyle.maxHeight)) + 2 + "px";
+    shortDetail.appendChild(lateOverflowProbe);
+    await new Promise((resolve) => {
+      const startedAt = performance.now();
+      const checkOverflow = () => {
+        if (shortDetail.scrollHeight > shortDetail.clientHeight || performance.now() - startedAt > 300) resolve();
+        else setTimeout(checkOverflow, 16);
+      };
+      checkOverflow();
+    });
+    result.lateOverflowGetsScrollbar = getComputedStyle(shortDetail).overflowY === "auto"
+      && shortDetail.scrollHeight > shortDetail.clientHeight;
+    lateOverflowProbe.remove();
+    await new Promise((resolve) => setTimeout(resolve, 40));
     result.archiveHasNoRepairAction = !findButton("检查与修复");
     findButton("设置")?.click();
     await new Promise((resolve) => setTimeout(resolve, 40));
@@ -319,13 +402,184 @@ async function run() {
   assert.equal(backupFlow.showsPartialWarning, true);
   assert.equal(backupFlow.showsArchivePath, true);
   assert.equal(backupFlow.openedRealArchive, true);
+  assert.equal(backupFlow.showsNicknameProfile, true);
   assert.equal(backupFlow.showsExternalLink, true);
+  assert.equal(backupFlow.longDetailScrolls, true);
+  assert.equal(backupFlow.detailUsesViewportLimit, true);
+  assert.equal(backupFlow.detailKeepsBottomGap, true);
+  assert.equal(backupFlow.shortDetailLetsPageScroll, true);
+  assert.equal(backupFlow.lateOverflowGetsScrollbar, true);
+  assert.equal(backupFlow.replacedQqEmotion, true);
+  assert.equal(backupFlow.qqEmotionUsesOfficialAsset, true);
+  assert.equal(backupFlow.normalizedQqMentions, true);
+  assert.equal(backupFlow.singleImageCentered, true);
+  assert.equal(backupFlow.singleImageUsesStage, true);
+  assert.equal(backupFlow.viewerImageKeepsVerticalSafety, true);
+  assert.equal(backupFlow.singleImageHasNoThumbnailStrip, true);
+  assert.equal(backupFlow.viewerWheelZooms, true);
+  assert.equal(backupFlow.viewerDoubleClickResets, true);
   assert.equal(backupFlow.archiveHasNoRepairAction, true);
   assert.equal(backupFlow.hasRepairAction, true);
   assert.equal(backupFlow.repairCompleted, true);
   assert.equal(repairCalls, 1);
   assert.equal(loginCalls[0]?.force, false);
   assert.equal(loginCalls[1]?.force, true);
+
+  const viewerControlTargets = await window.webContents.executeJavaScript(`(async () => {
+    const archiveButton = [...document.querySelectorAll("button")].find((button) => button.textContent.trim() === "我的档案");
+    archiveButton?.click();
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    [...document.querySelectorAll(".timeline-entry")].find((entry) => entry.textContent.includes("多图查看器交互测试"))?.click();
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    document.querySelector(".media-count-3 button")?.click();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const stageRect = document.querySelector(".image-viewer-image-stage")?.getBoundingClientRect();
+    const previousRect = document.querySelector('[aria-label="上一张"]')?.getBoundingClientRect();
+    const nextRect = document.querySelector('[aria-label="下一张"]')?.getBoundingClientRect();
+    const plusRect = document.querySelector('[aria-label="放大图片"]')?.getBoundingClientRect();
+    const fitRect = document.querySelector('[aria-label="适应窗口"]')?.getBoundingClientRect();
+    return {
+      plus: { x: Math.round(plusRect.left + plusRect.width / 2), y: Math.round(plusRect.top + plusRect.height / 2) },
+      fit: { x: Math.round(fitRect.left + fitRect.width / 2), y: Math.round(fitRect.top + fitRect.height / 2) },
+      next: { x: Math.round(nextRect.left + nextRect.width / 2), y: Math.round(nextRect.top + nextRect.height / 2) },
+      arrowsCentered: Math.abs((previousRect.top + previousRect.bottom) / 2 - (stageRect.top + stageRect.bottom) / 2) <= 1
+        && Math.abs((nextRect.top + nextRect.bottom) / 2 - (stageRect.top + stageRect.bottom) / 2) <= 1,
+    };
+  })()`);
+  const clickAt = async ({ x, y }) => {
+    window.webContents.sendInputEvent({ type: "mouseMove", x, y });
+    window.webContents.sendInputEvent({ type: "mouseDown", x, y, button: "left", clickCount: 1 });
+    window.webContents.sendInputEvent({ type: "mouseUp", x, y, button: "left", clickCount: 1 });
+    await new Promise((resolve) => setTimeout(resolve, 80));
+  };
+  await clickAt(viewerControlTargets.plus);
+  const zoomAfterNativePlus = await window.webContents.executeJavaScript(`Number(document.querySelector(".image-viewer-image-stage > img")?.dataset.zoom || 0)`);
+  await clickAt(viewerControlTargets.fit);
+  const zoomAfterNativeFit = await window.webContents.executeJavaScript(`Number(document.querySelector(".image-viewer-image-stage > img")?.dataset.zoom || 0)`);
+  await clickAt(viewerControlTargets.next);
+  const counterAfterNativeNext = await window.webContents.executeJavaScript(`document.querySelector(".image-viewer-meta span")?.textContent.trim()`);
+  const panBoundary = await window.webContents.executeJavaScript(`(async () => {
+    const stage = document.querySelector(".image-viewer-image-stage");
+    const image = stage.querySelector("img");
+    for (let step = 0; step < 12; step += 1) {
+      document.querySelector('[aria-label="放大图片"]')?.click();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    const rect = stage.getBoundingClientRect();
+    const pointerId = 91;
+    stage.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerId, button: 0, clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 }));
+    stage.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, pointerId, button: 0, clientX: rect.left + rect.width * 10, clientY: rect.top + rect.height * 10 }));
+    stage.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, pointerId, button: 0, clientX: rect.left + rect.width * 10, clientY: rect.top + rect.height * 10 }));
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    const scale = Number(image.dataset.zoom);
+    const fitScale = Math.min(rect.width / image.naturalWidth, rect.height / image.naturalHeight);
+    const maxX = Math.max(0, (image.naturalWidth * fitScale * scale - rect.width) / 2);
+    const maxY = Math.max(0, (image.naturalHeight * fitScale * scale - rect.height) / 2);
+    return {
+      scale,
+      x: Number(image.dataset.offsetX),
+      y: Number(image.dataset.offsetY),
+      maxX,
+      maxY,
+      clamped: Math.abs(Number(image.dataset.offsetX)) <= maxX + 1 && Math.abs(Number(image.dataset.offsetY)) <= maxY + 1,
+    };
+  })()`);
+  if (process.env.QZONE_VISUAL_CAPTURE_DIR) {
+    const captureDirectory = path.resolve(process.env.QZONE_VISUAL_CAPTURE_DIR);
+    fs.mkdirSync(captureDirectory, { recursive: true });
+    await window.webContents.executeJavaScript(`(async () => {
+      document.querySelector('[aria-label="适应窗口"]')?.click();
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      for (let step = 0; step < 5; step += 1) {
+        document.querySelector('[aria-label="放大图片"]')?.click();
+        await new Promise((resolve) => setTimeout(resolve, 30));
+      }
+    })()`);
+    fs.writeFileSync(path.join(captureDirectory, "image-viewer-controls.png"), (await window.webContents.capturePage()).toPNG());
+  }
+  await window.webContents.executeJavaScript(`document.querySelector('[aria-label="关闭图片查看器"]')?.click()`);
+  process.stdout.write(`Electron viewer control flow: ${JSON.stringify({ viewerControlTargets, zoomAfterNativePlus, zoomAfterNativeFit, counterAfterNativeNext, panBoundary })}\n`);
+  assert.equal(viewerControlTargets.arrowsCentered, true);
+  assert.equal(zoomAfterNativePlus > 1, true);
+  assert.equal(zoomAfterNativeFit, 1);
+  assert.equal(counterAfterNativeNext, "2 / 3");
+  assert.equal(panBoundary.scale, 5);
+  assert.equal(panBoundary.clamped, true);
+
+  if (process.env.QZONE_VISUAL_CAPTURE_DIR) {
+    const captureDirectory = path.resolve(process.env.QZONE_VISUAL_CAPTURE_DIR);
+    fs.mkdirSync(captureDirectory, { recursive: true });
+    window.setSize(1120, 720);
+    const viewerVisualMetrics = await window.webContents.executeJavaScript(`(async () => {
+      const archiveButton = [...document.querySelectorAll("button")].find((button) => button.textContent.trim() === "我的档案");
+      archiveButton?.click();
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      document.querySelectorAll(".timeline-entry")[0]?.click();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      document.querySelector(".media-count-1 button")?.click();
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      const viewer = document.querySelector(".image-viewer");
+      const stage = document.querySelector(".image-viewer-image-stage");
+      const image = stage?.querySelector("img");
+      const stageRect = stage?.getBoundingClientRect();
+      const imageRect = image?.getBoundingClientRect();
+      return {
+        open: Boolean(viewer && stage && image),
+        stageTop: stageRect?.top,
+        stageBottom: stageRect?.bottom,
+        imageTop: imageRect?.top,
+        imageBottom: imageRect?.bottom,
+        viewportHeight: window.innerHeight,
+      };
+    })()`);
+    fs.writeFileSync(path.join(captureDirectory, "image-viewer-fit.png"), (await window.webContents.capturePage()).toPNG());
+    assert.equal(viewerVisualMetrics.open, true);
+    assert.equal(viewerVisualMetrics.imageTop >= viewerVisualMetrics.stageTop - 1, true);
+    assert.equal(viewerVisualMetrics.imageBottom <= viewerVisualMetrics.stageBottom + 1, true);
+    await window.webContents.executeJavaScript(`document.querySelector('[aria-label="关闭图片查看器"]')?.click()`);
+    process.stdout.write(`Electron image viewer visual metrics: ${JSON.stringify(viewerVisualMetrics)}\n`);
+    window.setSize(1120, 900);
+    const longVisualMetrics = await window.webContents.executeJavaScript(`(async () => {
+      const archiveButton = [...document.querySelectorAll("button")].find((button) => button.textContent.trim() === "我的档案");
+      archiveButton?.click();
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      document.querySelectorAll(".timeline-entry")[0]?.click();
+      await new Promise((resolve) => setTimeout(resolve, 140));
+      const detail = document.querySelector(".archive-detail");
+      const rect = detail.getBoundingClientRect();
+      return { bottomGap: window.innerHeight - rect.bottom, scrollable: detail.classList.contains("is-scrollable"), bottom: rect.bottom, viewport: window.innerHeight };
+    })()`);
+    fs.writeFileSync(path.join(captureDirectory, "archive-detail-scrollable.png"), (await window.webContents.capturePage()).toPNG());
+    const shortVisualMetrics = await window.webContents.executeJavaScript(`(async () => {
+      const utility = document.querySelector(".utility-view");
+      utility.scrollTop = Math.min(260, utility.scrollHeight - utility.clientHeight);
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      document.querySelectorAll(".timeline-entry")[1]?.click();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      const detail = document.querySelector(".archive-detail");
+      const rect = detail.getBoundingClientRect();
+      return { bottomGap: window.innerHeight - rect.bottom, scrollable: detail.classList.contains("is-scrollable"), outerScrollable: utility.scrollHeight > utility.clientHeight, overflowY: getComputedStyle(detail).overflowY };
+    })()`);
+    fs.writeFileSync(path.join(captureDirectory, "archive-detail-page-scroll.png"), (await window.webContents.capturePage()).toPNG());
+    const wheelTarget = await window.webContents.executeJavaScript(`(() => {
+      const detail = document.querySelector(".archive-detail");
+      const utility = document.querySelector(".utility-view");
+      const rect = detail.getBoundingClientRect();
+      return { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2), before: utility.scrollTop };
+    })()`);
+    window.webContents.sendInputEvent({ type: "mouseMove", x: wheelTarget.x, y: wheelTarget.y });
+    window.webContents.sendInputEvent({ type: "mouseWheel", x: wheelTarget.x, y: wheelTarget.y, deltaX: 0, deltaY: -180, canScroll: true });
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    const wheelAfter = await window.webContents.executeJavaScript(`document.querySelector(".utility-view").scrollTop`);
+    shortVisualMetrics.wheelScrolledOuter = Math.abs(wheelAfter - wheelTarget.before) > 1;
+    process.stdout.write(`Electron archive visual metrics: ${JSON.stringify({ longVisualMetrics, shortVisualMetrics })}\n`);
+    assert.equal(Math.abs(longVisualMetrics.bottomGap - 12) <= 2, true);
+    assert.equal(longVisualMetrics.scrollable, true);
+    assert.equal(shortVisualMetrics.scrollable, false);
+    assert.equal(shortVisualMetrics.outerScrollable, true);
+    assert.equal(shortVisualMetrics.overflowY, "auto");
+    assert.equal(shortVisualMetrics.wheelScrolledOuter, true);
+  }
 
   await window.webContents.executeJavaScript(`window.localStorage.setItem("qzone-journal-demo-loaded", "true")`);
   const reloadComplete = new Promise((resolve) => window.webContents.once("did-finish-load", resolve));

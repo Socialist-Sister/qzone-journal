@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   Archive,
   ArrowsClockwise,
@@ -32,6 +32,7 @@ import {
   PencilSimple,
   Plus,
   Robot,
+  Smiley,
   ShieldCheck,
   SlidersHorizontal,
   Sparkle,
@@ -70,6 +71,23 @@ function BrandMark() {
 
 function LoadingSpinner({ size = 17 }) {
   return <span className="loading-spinner" style={{ width: size, height: size }} aria-hidden="true"><SpinnerGap size={size} /></span>;
+}
+
+function accountDisplayName(account) {
+  return account?.nickname || account?.accountLabel || (account?.uin ? `QQ ${account.uin}` : "QQ 账号");
+}
+
+function AccountAvatar({ account, className }) {
+  const avatarUrl = String(account?.avatarUrl || "");
+  const safeAvatarUrl = avatarUrl.startsWith("https://q.qlogo.cn/headimg_dl?") ? avatarUrl : "";
+  const [failed, setFailed] = useState(false);
+  useEffect(() => setFailed(false), [safeAvatarUrl]);
+  return (
+    <span className={className}>
+      {safeAvatarUrl && <img className={`account-avatar-image ${failed ? "failed" : ""}`} src={safeAvatarUrl} alt="" draggable={false} referrerPolicy="no-referrer" onError={() => setFailed(true)} />}
+      {(!safeAvatarUrl || failed) && <UserCircle size={className === "account-trigger-icon" ? 18 : 20} weight="fill" />}
+    </span>
+  );
 }
 
 function TitleBar({ activeView, onNavigate, onWindowAction, isMaximized, accountState, accountBusy, onSwitchAccount, onAddAccount, onDeleteAccount }) {
@@ -142,8 +160,8 @@ function TitleBar({ activeView, onNavigate, onWindowAction, isMaximized, account
             aria-label="切换 QQ 账号"
             onClick={() => setAccountMenuOpen((open) => !open)}
           >
-            <span className="account-trigger-icon"><UserCircle size={18} weight="fill" /></span>
-            <span className="account-trigger-label">{activeAccount?.accountLabel || "QQ 账号"}</span>
+            <AccountAvatar account={activeAccount} className="account-trigger-icon" />
+            <span className="account-trigger-label">{accountDisplayName(activeAccount)}</span>
             <span className={`account-status-dot ${activeAccount?.hasArchive ? "archived" : ""}`} aria-hidden="true" />
             <CaretDown className="account-caret" size={14} />
           </button>
@@ -167,14 +185,14 @@ function TitleBar({ activeView, onNavigate, onWindowAction, isMaximized, account
                         setAccountMenuOpen(false);
                       }}
                     >
-                      <span className="account-avatar"><UserCircle size={20} weight="fill" /></span>
+                      <AccountAvatar account={account} className="account-avatar" />
                       <span className="account-menu-copy">
-                        <strong>{account.accountLabel}</strong>
-                        <small>{account.hasArchive ? "本地档案可用" : "尚无本地档案"}</small>
+                        <strong>{accountDisplayName(account)}</strong>
+                        <small>{account.uin ? `QQ ${account.uin}` : "QQ 号待识别"}</small>
                       </span>
                       {account.active && <Check size={16} weight="bold" />}
                     </button>
-                    <button className="account-delete" type="button" aria-label={`删除 ${account.accountLabel} 的全部数据`} title="删除账号数据" disabled={accountBusy} onClick={() => setDeleteCandidateId(account.id)}>
+                    <button className="account-delete" type="button" aria-label={`删除 ${accountDisplayName(account)} 的全部数据`} title="删除账号数据" disabled={accountBusy} onClick={() => setDeleteCandidateId(account.id)}>
                       <Trash size={16} />
                     </button>
                   </div>
@@ -182,7 +200,7 @@ function TitleBar({ activeView, onNavigate, onWindowAction, isMaximized, account
               </div>
               {deleteCandidate && (
                 <div className="account-delete-confirm" role="alertdialog" aria-label="确认删除账号全部数据">
-                  <strong>删除 {deleteCandidate.accountLabel} 的全部数据？</strong>
+                  <strong>删除 {accountDisplayName(deleteCandidate)} 的全部数据？</strong>
                   <span>账号入口和临时会话会被清除，本地档案将移入系统回收站。</span>
                   <code>{deleteCandidate.archivePath || "当前账号尚无本地档案"}</code>
                   <div>
@@ -323,6 +341,47 @@ const entryTypeMeta = {
   album: { label: "相册", icon: Images },
 };
 
+function normalizeArchiveMentions(value) {
+  return String(value || "").replace(/@\{([^{}\r\n]*)\}/g, (_match, fields) => {
+    const nickname = String(fields)
+      .match(/(?:^|,)\s*nick\s*:\s*([\s\S]*?)(?=,\s*(?:uin|who|auto)\s*:|$)/i)?.[1]
+      ?.trim();
+    return nickname ? `@${nickname}` : "@QQ好友";
+  });
+}
+
+function ArchiveText({ text }) {
+  const parts = normalizeArchiveMentions(text).split(/(\[em\]e\d+\[\/em\]|\[QQ表情\])/gi);
+  return parts.map((part, index) => {
+    const match = part.match(/^\[em\]e(\d+)\[\/em\]$/i);
+    if (match) return <QqEmotion code={match[1]} key={`qq-emotion-${match[1]}-${index}`} />;
+    if (/^\[QQ表情\]$/i.test(part)) return <QqEmotion key={`qq-emotion-fallback-${index}`} />;
+    return part;
+  });
+}
+
+function QqEmotion({ code }) {
+  const [failed, setFailed] = useState(false);
+  if (!code || failed) {
+    return (
+      <span className="qq-emotion-fallback" role="img" aria-label="QQ 表情" title="QQ 表情">
+        <Smiley size="1em" weight="duotone" />
+      </span>
+    );
+  }
+  return (
+    <img
+      className="qq-emotion"
+      src={`https://qzonestyle.gtimg.cn/qzone/em/e${code}.gif`}
+      alt="QQ 表情"
+      title={`QQ 表情 e${code}`}
+      draggable={false}
+      referrerPolicy="no-referrer"
+      onError={() => setFailed(true)}
+    />
+  );
+}
+
 function MediaGrid({ images, onOpen }) {
   if (!images?.length) return null;
   const visibleImages = images.slice(0, 9);
@@ -340,34 +399,171 @@ function MediaGrid({ images, onOpen }) {
 }
 
 function ImageViewer({ images, index, onChange, onClose }) {
+  const stageRef = useRef(null);
+  const imageRef = useRef(null);
+  const dragRef = useRef(null);
+  const transformRef = useRef({ scale: 1, x: 0, y: 0 });
+  const [transform, setTransform] = useState(transformRef.current);
+  const [dragging, setDragging] = useState(false);
+
+  const applyTransform = (candidate) => {
+    const stage = stageRef.current;
+    const nextScale = Math.min(5, Math.max(1, candidate.scale));
+    if (!stage || nextScale === 1) {
+      const reset = { scale: 1, x: 0, y: 0 };
+      transformRef.current = reset;
+      setTransform(reset);
+      return;
+    }
+    const image = imageRef.current;
+    const stageRect = stage.getBoundingClientRect();
+    const naturalWidth = image?.naturalWidth || stageRect.width;
+    const naturalHeight = image?.naturalHeight || stageRect.height;
+    const fitScale = Math.min(stageRect.width / naturalWidth, stageRect.height / naturalHeight);
+    const fittedWidth = naturalWidth * fitScale;
+    const fittedHeight = naturalHeight * fitScale;
+    const maxX = Math.max(0, (fittedWidth * nextScale - stageRect.width) / 2);
+    const maxY = Math.max(0, (fittedHeight * nextScale - stageRect.height) / 2);
+    const next = {
+      scale: nextScale,
+      x: Math.min(maxX, Math.max(-maxX, candidate.x)),
+      y: Math.min(maxY, Math.max(-maxY, candidate.y)),
+    };
+    transformRef.current = next;
+    setTransform(next);
+  };
+
+  const resetView = () => applyTransform({ scale: 1, x: 0, y: 0 });
+
+  const zoomAt = (nextScale, clientX, clientY) => {
+    const current = transformRef.current;
+    const stageRect = stageRef.current?.getBoundingClientRect();
+    const boundedScale = Math.min(5, Math.max(1, nextScale));
+    if (!stageRect || boundedScale === 1) {
+      resetView();
+      return;
+    }
+    const anchorX = Number.isFinite(clientX) ? clientX - stageRect.left - stageRect.width / 2 : 0;
+    const anchorY = Number.isFinite(clientY) ? clientY - stageRect.top - stageRect.height / 2 : 0;
+    const ratio = boundedScale / current.scale;
+    applyTransform({
+      scale: boundedScale,
+      x: anchorX - (anchorX - current.x) * ratio,
+      y: anchorY - (anchorY - current.y) * ratio,
+    });
+  };
+
   useEffect(() => {
     const handleKeyDown = (event) => {
       if (event.key === "Escape") onClose();
       if (event.key === "ArrowLeft") onChange((index - 1 + images.length) % images.length);
       if (event.key === "ArrowRight") onChange((index + 1) % images.length);
+      if (event.key === "0") resetView();
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [images.length, index, onChange, onClose]);
 
+  useEffect(() => {
+    const reset = { scale: 1, x: 0, y: 0 };
+    transformRef.current = reset;
+    setTransform(reset);
+    setDragging(false);
+    dragRef.current = null;
+  }, [index]);
+
+  useLayoutEffect(() => {
+    const stage = stageRef.current;
+    if (!stage) return undefined;
+    const observer = new ResizeObserver(() => applyTransform(transformRef.current));
+    observer.observe(stage);
+    return () => observer.disconnect();
+  }, []);
+
+  const handleWheel = (event) => {
+    event.preventDefault();
+    const factor = event.deltaY < 0 ? 1.16 : 1 / 1.16;
+    zoomAt(transformRef.current.scale * factor, event.clientX, event.clientY);
+  };
+
+  const handlePointerDown = (event) => {
+    if (event.button !== 0 || transformRef.current.scale <= 1) return;
+    try { event.currentTarget.setPointerCapture?.(event.pointerId); } catch { /* Synthetic test pointers have no native capture target. */ }
+    dragRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      originX: transformRef.current.x,
+      originY: transformRef.current.y,
+    };
+    setDragging(true);
+  };
+
+  const handlePointerMove = (event) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    applyTransform({
+      scale: transformRef.current.scale,
+      x: drag.originX + event.clientX - drag.startX,
+      y: drag.originY + event.clientY - drag.startY,
+    });
+  };
+
+  const endDrag = (event) => {
+    if (dragRef.current?.pointerId !== event.pointerId) return;
+    try { event.currentTarget.releasePointerCapture?.(event.pointerId); } catch { /* Pointer capture may already be released. */ }
+    dragRef.current = null;
+    setDragging(false);
+  };
+
   return (
-    <div className="image-viewer" role="dialog" aria-modal="true" aria-label="图片查看器" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+    <div className={`image-viewer ${images.length === 1 ? "single-image" : ""}`} role="dialog" aria-modal="true" aria-label="图片查看器" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
       <div className="image-viewer-toolbar">
-        <span>{index + 1} / {images.length}</span>
-        <button type="button" onClick={onClose} aria-label="关闭图片查看器"><X size={24} /></button>
+        <div className="image-viewer-meta"><span>{index + 1} / {images.length}</span><small>滚轮缩放 · 放大后拖动</small></div>
+        <div className="viewer-zoom-controls" aria-label="图片缩放控制">
+          <button type="button" onClick={() => zoomAt(transform.scale / 1.2)} disabled={transform.scale <= 1} aria-label="缩小图片"><Minus size={17} /></button>
+          <output aria-live="polite">{Math.round(transform.scale * 100)}%</output>
+          <button type="button" onClick={() => zoomAt(transform.scale * 1.2)} disabled={transform.scale >= 5} aria-label="放大图片"><Plus size={17} /></button>
+          <button type="button" onClick={resetView} disabled={transform.scale === 1} aria-label="适应窗口" title="适应窗口（双击图片或按 0）"><CornersIn size={17} /></button>
+        </div>
+        <button className="viewer-close" type="button" onClick={onClose} aria-label="关闭图片查看器"><X size={24} /></button>
       </div>
       <div className="image-viewer-stage">
         {images.length > 1 && <button className="viewer-nav previous" type="button" onClick={() => onChange((index - 1 + images.length) % images.length)} aria-label="上一张"><CaretLeft size={30} /></button>}
-        <img src={images[index]} alt={`第 ${index + 1} 张大图`} draggable={false} />
+        <div
+          ref={stageRef}
+          className={`image-viewer-image-stage ${dragging ? "is-dragging" : ""} ${transform.scale > 1 ? "is-zoomed" : ""}`}
+          onWheel={handleWheel}
+          onPointerDown={handlePointerDown}
+          onPointerMove={handlePointerMove}
+          onPointerUp={endDrag}
+          onPointerCancel={endDrag}
+          onDoubleClick={resetView}
+          title="滚轮缩放，放大后拖动，双击恢复适应窗口"
+        >
+          <img
+            ref={imageRef}
+            src={images[index]}
+            alt={`第 ${index + 1} 张大图`}
+            draggable={false}
+            data-zoom={transform.scale.toFixed(3)}
+            data-offset-x={transform.x.toFixed(2)}
+            data-offset-y={transform.y.toFixed(2)}
+            onLoad={() => applyTransform(transformRef.current)}
+            style={{ transform: `translate3d(${transform.x}px, ${transform.y}px, 0) scale(${transform.scale})` }}
+          />
+        </div>
         {images.length > 1 && <button className="viewer-nav next" type="button" onClick={() => onChange((index + 1) % images.length)} aria-label="下一张"><CaretRight size={30} /></button>}
       </div>
-      <div className="image-viewer-thumbnails" aria-label="图片缩略图">
-        {images.map((src, thumbnailIndex) => (
-          <button className={thumbnailIndex === index ? "active" : ""} type="button" key={`${src}-viewer-${thumbnailIndex}`} onClick={() => onChange(thumbnailIndex)} aria-label={`转到第 ${thumbnailIndex + 1} 张`}>
-            <img src={src} alt="" draggable={false} />
-          </button>
-        ))}
-      </div>
+      {images.length > 1 && (
+        <div className="image-viewer-thumbnails" aria-label="图片缩略图">
+          {images.map((src, thumbnailIndex) => (
+            <button className={thumbnailIndex === index ? "active" : ""} type="button" key={`${src}-viewer-${thumbnailIndex}`} onClick={() => onChange(thumbnailIndex)} aria-label={`转到第 ${thumbnailIndex + 1} 张`}>
+              <img src={src} alt="" draggable={false} />
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -377,6 +573,7 @@ function ArchiveView({ archive, onStart, onImportDemo }) {
   const [query, setQuery] = useState("");
   const [selectedId, setSelectedId] = useState("");
   const [viewer, setViewer] = useState(null);
+  const detailRef = useRef(null);
   const entries = archive?.entries ?? [];
   const visibleEntries = useMemo(() => {
     const keyword = query.trim().toLowerCase();
@@ -387,6 +584,41 @@ function ArchiveView({ archive, onStart, onImportDemo }) {
       return matchesType && matchesQuery;
     });
   }, [entries, filter, query]);
+  const selectedEntry = visibleEntries.find((entry) => entry.id === selectedId) ?? visibleEntries[0];
+
+  useLayoutEffect(() => {
+    const detail = detailRef.current;
+    if (!detail) return undefined;
+    const scrollRoot = detail.closest(".utility-view");
+    let frame = 0;
+    const applyDetailViewport = () => {
+      const bottomGap = 12;
+      const availableHeight = Math.max(96, Math.floor(window.innerHeight - detail.getBoundingClientRect().top - bottomGap));
+      detail.style.setProperty("--archive-detail-max-height", availableHeight + "px");
+      detail.classList.toggle("is-scrollable", detail.scrollHeight > detail.clientHeight);
+    };
+    const updateDetailViewport = () => {
+      applyDetailViewport();
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(applyDetailViewport);
+    };
+    const resizeObserver = new ResizeObserver(updateDetailViewport);
+    const mutationObserver = new MutationObserver(updateDetailViewport);
+    resizeObserver.observe(detail);
+    mutationObserver.observe(detail, { childList: true, subtree: true, characterData: true });
+    scrollRoot?.addEventListener("scroll", updateDetailViewport, { passive: true });
+    window.addEventListener("resize", updateDetailViewport);
+    detail.addEventListener("load", updateDetailViewport, true);
+    updateDetailViewport();
+    return () => {
+      cancelAnimationFrame(frame);
+      resizeObserver.disconnect();
+      mutationObserver.disconnect();
+      scrollRoot?.removeEventListener("scroll", updateDetailViewport);
+      window.removeEventListener("resize", updateDetailViewport);
+      detail.removeEventListener("load", updateDetailViewport, true);
+    };
+  }, [archive?.id, selectedEntry?.id]);
 
   if (!archive) {
     return (
@@ -405,8 +637,6 @@ function ArchiveView({ archive, onStart, onImportDemo }) {
   }
 
   const stats = getDemoStats(archive);
-  const selectedEntry = visibleEntries.find((entry) => entry.id === selectedId) ?? visibleEntries[0];
-
   return (
     <section className="utility-view archive-view">
       <div className="archive-heading-row">
@@ -474,7 +704,7 @@ function ArchiveView({ archive, onStart, onImportDemo }) {
                 <span className="timeline-entry-copy">
                   <span className="timeline-date">{entry.displayDate}</span>
                   {entry.title && <strong>{entry.title}</strong>}
-                  <span className={entry.title ? "timeline-excerpt" : "timeline-post-copy"}>{entry.text}</span>
+                  <span className={entry.title ? "timeline-excerpt" : "timeline-post-copy"}><ArchiveText text={entry.text} /></span>
                   <small>
                     {entry.images?.length ? <><Images size={14} />{entry.images.length}</> : null}
                     <Heart size={14} />{entry.likes.length}<ChatsCircle size={14} />{entry.comments.length}
@@ -491,7 +721,7 @@ function ArchiveView({ archive, onStart, onImportDemo }) {
           )}
         </div>
 
-        <aside className="archive-detail" aria-live="polite">
+        <aside className="archive-detail" aria-live="polite" ref={detailRef}>
           {selectedEntry ? (
             <>
               <div className="detail-heading">
@@ -499,7 +729,7 @@ function ArchiveView({ archive, onStart, onImportDemo }) {
                 <small>{selectedEntry.displayDate}</small>
                 {selectedEntry.title && <h2>{selectedEntry.title}</h2>}
               </div>
-              <p className={`detail-body ${selectedEntry.title ? "" : "titleless"}`}>{selectedEntry.text}</p>
+              <p className={`detail-body ${selectedEntry.title ? "" : "titleless"}`}><ArchiveText text={selectedEntry.text} /></p>
               {selectedEntry.links?.length > 0 && (
                 <div className="detail-links" aria-label="动态中的外部链接">
                   {selectedEntry.links.map((link) => (
@@ -513,12 +743,12 @@ function ArchiveView({ archive, onStart, onImportDemo }) {
               {selectedEntry.location && <p className="detail-location"><MapPin size={16} />{selectedEntry.location}</p>}
               <div className="detail-section">
                 <strong><Heart size={17} />{selectedEntry.likes.length} 人点赞</strong>
-                <p>{selectedEntry.likes.join("、")}</p>
+                <p><ArchiveText text={selectedEntry.likes.join("、")} /></p>
               </div>
               <div className="detail-section">
                 <strong><ChatsCircle size={17} />评论 {selectedEntry.comments.length}</strong>
                 {selectedEntry.comments.length ? selectedEntry.comments.map((comment, index) => (
-                  <p className="detail-comment" key={`${selectedEntry.id}-${index}`}><b>{comment.name}</b>{comment.text}</p>
+                  <p className="detail-comment" key={`${selectedEntry.id}-${index}`}><b><ArchiveText text={comment.name} /></b><span><ArchiveText text={comment.text} /></span></p>
                 )) : <p>这条内容还没有评论。</p>}
               </div>
             </>

@@ -219,7 +219,7 @@ test("successful parser migration keeps the old records in diagnostics and commi
   const committedManifest = await readJson(manifestPath);
   const entries = await store.readEntries();
   const previousDirectory = path.join(rootPath, ...transaction.quarantineRelativePath.split("/"), "previous");
-  assert.equal(committedManifest.collection.parserVersion, 4);
+  assert.equal(committedManifest.collection.parserVersion, 6);
   assert.deepEqual(entries.map((entry) => entry.text).sort(), ["新解析正文", "本轮未返回但必须保留"].sort());
   assert.equal((await fs.readdir(previousDirectory)).length, 2);
 });
