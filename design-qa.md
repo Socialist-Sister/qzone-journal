@@ -2,9 +2,9 @@
 
 ## Evidence
 
-- Source state: `docs/qa/v0.6.0-alpha/settings-privacy-full.png` (2214 × 1318 at the active Windows scale factor).
-- Rendered implementation: `docs/qa/v0.6.0-alpha/settings-privacy-without-info-row.png` (2214 × 1318; Electron window 1120 × 720).
-- Equal-state comparison: `docs/qa/v0.6.0-alpha/settings-privacy-removal-comparison.png` (1420 × 437, both captures normalized to 700 × 417).
+- Source state: `docs/qa/v0.4.0-alpha/settings-privacy-full.png` (2214 × 1318 at the active Windows scale factor).
+- Rendered implementation: `docs/qa/v0.4.0-alpha/settings-privacy-without-info-row.png` (2214 × 1318; Electron window 1120 × 720).
+- Equal-state comparison: `docs/qa/v0.4.0-alpha/settings-privacy-removal-comparison.png` (1420 × 437, both captures normalized to 700 × 417).
 - State: Settings → Privacy & Export, account menu open in the same fixture state.
 
 ## Findings and iteration history
