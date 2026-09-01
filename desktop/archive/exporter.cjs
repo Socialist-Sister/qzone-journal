@@ -103,35 +103,73 @@ function filterEntries(entries, options) {
 }
 
 function createAnonymizer(ownerNickname, enabled) {
-  const owner = safeText(ownerNickname, 80).trim();
+  const cleanName = (value) => safeText(value, 80)
+    .replace(/^@/, "")
+    .replace(/[\u200B-\u200D\uFEFF]/g, "")
+    .replace(/\s+/g, " ")
+    .trim() || "QQ 好友";
+  const owner = cleanName(ownerNickname);
+  const canonicalName = (value) => cleanName(value).normalize("NFKC").toLocaleLowerCase("zh-CN");
+  const ownerKey = canonicalName(owner);
   const aliases = new Map();
+  const knownForms = new Map([[owner, owner]]);
   const anonymizeName = (value) => {
-    const name = safeText(value, 80).replace(/^@/, "").trim() || "QQ 好友";
-    if (!enabled || name === owner) return name;
-    if (!aliases.has(name)) aliases.set(name, `好友 ${aliases.size + 1}`);
-    return aliases.get(name);
+    const name = cleanName(value);
+    const key = canonicalName(name);
+    if (!enabled || key === ownerKey) {
+      knownForms.set(name, name);
+      knownForms.set(name.normalize("NFKC"), name);
+      return name;
+    }
+    if (!aliases.has(key)) aliases.set(key, `好友 ${aliases.size + 1}`);
+    const alias = aliases.get(key);
+    knownForms.set(name, alias);
+    knownForms.set(name.normalize("NFKC"), alias);
+    return alias;
   };
   const anonymizeText = (value) => {
     let text = safeText(value);
     if (!enabled) return text;
-    text = text.replace(/@([^\s@，。！？、:：；;（）()\[\]{}<>]{1,80})/g, (_match, name) => `@${anonymizeName(name)}`);
-    for (const [name, alias] of aliases) {
-      text = text.replaceAll(`@${name}`, `@${alias}`);
+
+    // Protect complete names already known for this post. QQ nicknames often
+    // contain brackets, dots or symbols that a generic @ parser would split.
+    const protectedMentions = [];
+    for (const [name, alias] of [...knownForms].sort((left, right) => right[0].length - left[0].length)) {
+      const mention = `@${name}`;
+      if (!text.includes(mention)) continue;
+      const token = `\uE000${protectedMentions.length}\uE001`;
+      protectedMentions.push(`@${alias}`);
+      text = text.replaceAll(mention, token);
     }
+    text = text.replace(/@([^\s@，。！？、:：；;（）()\[\]{}<>]{1,80})/g, (_match, name) => `@${anonymizeName(name)}`);
+    text = text.replace(/\uE000(\d+)\uE001/g, (_match, index) => protectedMentions[Number(index)] || "@QQ 好友");
     return text;
   };
   const anonymizeLabel = (value) => {
     let text = anonymizeText(value);
     if (!enabled) return text;
-    for (const [name, alias] of [...aliases].sort((left, right) => right[0].length - left[0].length)) {
+    for (const [name, alias] of [...knownForms].sort((left, right) => right[0].length - left[0].length)) {
       text = text.replaceAll(name, alias);
     }
     return text;
   };
-  return { anonymizeName, anonymizeText, anonymizeLabel, aliases };
+  return { anonymizeName, anonymizeText, anonymizeLabel, primeName: anonymizeName, aliases };
 }
 
-function normalizeExportEntry(entry, options, anonymizer) {
+function normalizeExportEntry(entry, options, ownerNickname) {
+  // Anonymous numbering is local to one post. Pre-register visible people so
+  // an author's full nickname and a later @mention always share one number.
+  const anonymizer = createAnonymizer(ownerNickname, options.anonymize);
+  if (options.includeComments) {
+    for (const comment of Array.isArray(entry.comments) ? entry.comments : []) {
+      anonymizer.primeName(comment?.authorName || comment?.author || comment?.name || "QQ 好友");
+    }
+  }
+  if (options.includeLikes) {
+    for (const like of Array.isArray(entry.likes) ? entry.likes : []) {
+      anonymizer.primeName(like?.name || like?.nickname || like || "QQ 好友");
+    }
+  }
   const comments = options.includeComments ? (Array.isArray(entry.comments) ? entry.comments : []).map((comment) => ({
     authorName: anonymizer.anonymizeName(comment?.authorName || comment?.author || comment?.name || "QQ 好友"),
     text: anonymizer.anonymizeText(comment?.text || comment?.content),
@@ -162,8 +200,7 @@ function buildExportModel({ entries, profileName, ownerNickname, exportedAt = ne
   }
   const filtered = filterEntries(entries, sanitized);
   if (!filtered.length) throw new Error("当前范围内没有可导出的内容");
-  const anonymizer = createAnonymizer(ownerNickname, sanitized.anonymize);
-  const normalizedEntries = filtered.map((entry) => normalizeExportEntry(entry, sanitized, anonymizer));
+  const normalizedEntries = filtered.map((entry) => normalizeExportEntry(entry, sanitized, ownerNickname));
   const ownerLabel = safeText(ownerNickname || profileName || "QQ 空间", 80).trim() || "QQ 空间";
   return {
     title: `${ownerLabel}的空间档案`,

@@ -72,6 +72,49 @@ test("export model filters dates and anonymizes people consistently", () => {
   assert.deepEqual(model.entries[0].links, [{ url: "https://example.com/video?part=1", label: "好友 1分享的视频" }]);
 });
 
+test("anonymous friend numbering restarts per post and reuses complete nicknames in replies", () => {
+  const ownerNickname = "譜瑞♡僵斯";
+  const model = buildExportModel({
+    profileName: `${ownerNickname}的空间`,
+    ownerNickname,
+    options: { anonymize: true, includeComments: true, includeLikes: true },
+    entries: [
+      {
+        sourceId: "complex-names",
+        type: "post",
+        createdAt: "2026-08-31T12:00:00+08:00",
+        text: "第一篇",
+        comments: [
+          { authorName: "ヾ(◍°∇°◍)ﾉﾞ", text: "登录点几乎重叠" },
+          { authorName: ownerNickname, text: "@ヾ(◍°∇°◍)ﾉﾞ 台州坎门街道" },
+          { authorName: "Lorrinius.Asuka.", text: "怎么不去日本了" },
+          { authorName: ownerNickname, text: "@Lorrinius.Asuka. 受到卓妹感召" },
+        ],
+        likes: [],
+      },
+      {
+        sourceId: "second-post",
+        type: "post",
+        createdAt: "2026-08-30T12:00:00+08:00",
+        text: "第二篇",
+        comments: [{ authorName: "另一位好友", text: "新一篇重新编号" }],
+        likes: [],
+      },
+    ],
+  });
+
+  assert.deepEqual(model.entries[0].comments.map((comment) => comment.authorName), [
+    "好友 1",
+    ownerNickname,
+    "好友 2",
+    ownerNickname,
+  ]);
+  assert.match(model.entries[0].comments[1].text, /^@好友 1 /);
+  assert.match(model.entries[0].comments[3].text, /^@好友 2 /);
+  assert.doesNotMatch(JSON.stringify(model.entries[0]), /好友 [34]/);
+  assert.equal(model.entries[1].comments[0].authorName, "好友 1");
+});
+
 test("visible interaction names require an explicit second confirmation", () => {
   assert.throws(() => buildExportModel({
     entries: fixtureEntries(),
