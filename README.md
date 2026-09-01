@@ -3,7 +3,7 @@
 一款本地优先的 QQ 空间个人动态备份桌面应用。它通过 QQ 官方登录页面建立本机会话，将可读取的个人空间内容整理为版本化本地档案，并可接入用户自己的 OpenAI 兼容模型生成回顾。
 
 > [!WARNING]
-> 当前为 `v0.5.0-alpha` 早期测试版。QQ 空间没有面向本项目的稳定公开导出 API，采集能力可能因 QQ 页面或接口变化而失效。首次使用前请阅读下方“当前边界”，不要把它作为唯一备份。
+> 当前为 `v0.6.0-alpha` 早期测试版。QQ 空间没有面向本项目的稳定公开导出 API，采集能力可能因 QQ 页面或接口变化而失效。首次使用前请阅读下方“当前边界”，不要把它作为唯一备份。
 
 ## 已实现
 
@@ -20,6 +20,8 @@
 - 采集结果会标明适配器为正常、兼容模式或部分完成，避免把截断内容误报为完整备份。
 - 多个 OpenAI 兼容模型服务、模型自动检测、连接测试、AI 回顾与限定档案范围的追问。
 - API Key 使用 Electron `safeStorage` 加密；Cookie 不进入 React 页面或归档文件。
+- 主窗口默认拒绝摄像头、定位、通知等非必要权限，内部导航使用精确来源校验；媒体下载会复验最终域名、类型与 80 MB 流式上限。
+- 设置页可检查 GitHub 最新版本；更新仍由用户手动下载和安装，不会静默替换本地程序。
 
 ## 当前边界
 
@@ -29,14 +31,16 @@
 - 原图导出可能生成很大的文件；对外分享前建议使用压缩副本并保持“匿名化好友”开启。
 - 本地档案是普通 JSON 和媒体文件，不进行额外加密。请将备份目录放在可信磁盘和受保护的系统账户中。
 - AI 功能会把相关档案文字和互动摘要发送到用户配置的模型服务，并可能产生费用。
-- 当前没有自动更新器；请以 GitHub Releases 页面发布的版本为准。
+- 当前只提供可信版本检查，没有自动安装或自动回滚；请从 GitHub Releases 手动下载并核对 SHA-256。
+- 本地构建没有商业代码签名证书；SmartScreen 信誉与真实 Windows 10、WPS 兼容性仍属于发布前人工门槛。
 
 ## 安装
 
 从 [Releases](https://github.com/Socialist-Sister/qzone-journal/releases) 下载：
 
-- `QZoneJournal-0.5.0-alpha-x64.exe`：Windows 安装版。
-- `QZoneJournal-0.5.0-alpha-x64-portable.zip`：解压后直接运行的免安装版。
+- `QZoneJournal-0.6.0-alpha-x64.exe`：Windows 当前用户安装版，不要求管理员权限。
+- `QZoneJournal-0.6.0-alpha-portable.zip`：解压后直接运行的免安装版。
+- `SHA256SUMS.txt`、`SBOM.cdx.json`、`THIRD_PARTY_LICENSES.json`：完整性校验、软件物料清单和生产依赖许可。
 
 当前 Alpha 安装包尚未进行商业代码签名，Windows 可能显示 SmartScreen 提示。请只从本仓库 Release 下载并核对 SHA-256。
 
@@ -66,6 +70,7 @@ pnpm run test:session
 pnpm run test:desktop
 pnpm run test:ai-compat
 pnpm run test:sites
+pnpm run test:security
 pnpm run desktop:dist
 ```
 
@@ -78,6 +83,8 @@ pnpm run desktop:dist
 - 删除账号时，应用只允许处理已授权备份目录内且带有效 QQ 空间归档标识的目录，并优先移入系统回收站。
 - 脱敏诊断包采用字段白名单，不包含 Cookie、完整 QQ 号、API Key、绝对路径、档案正文或原始 QQ 响应。
 - 备份位置由桌面主进程和系统目录选择器管理，渲染界面不能传入任意写入路径。
+- 媒体只允许从明确的 QQ 空间图片域名下载，重定向后会再次校验；响应会在读取前检查声明大小，并在流式读取时执行硬上限。
+- Release 工作流会生成安装版、免安装版、SHA-256、CycloneDX SBOM 与依赖许可清单；代码签名仅在仓库配置有效签名证书后启用。
 - 请不要在公开 Issue 中粘贴 Cookie、API Key、QQ 号、私人动态或归档诊断文件。安全问题请参阅 [`SECURITY.md`](SECURITY.md)。
 
 ## 免责声明

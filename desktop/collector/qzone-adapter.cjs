@@ -340,9 +340,62 @@ async function fetchMoodPage(options, dependencies = {}) {
   }
 }
 
-async function downloadMedia({ sourceUrl, uin, signal }) {
+const MAX_MEDIA_BYTES = 80 * 1024 * 1024;
+const SAFE_IMAGE_TYPES = new Set([
+  "image/avif", "image/bmp", "image/gif", "image/jpeg", "image/jpg", "image/pjpeg", "image/png", "image/x-png", "image/webp", "image/apng",
+]);
+
+async function readLimitedResponseBody(response, maximumBytes = MAX_MEDIA_BYTES) {
+  const declaredLength = Number(response.headers.get("content-length"));
+  if (Number.isFinite(declaredLength) && declaredLength > maximumBytes) throw new Error("单张图片超过 80 MB 安全限制");
+  if (!response.body?.getReader) {
+    const bytes = Buffer.from(await response.arrayBuffer());
+    if (bytes.length > maximumBytes) throw new Error("单张图片超过 80 MB 安全限制");
+    return bytes;
+  }
+  const reader = response.body.getReader();
+  const chunks = [];
+  let size = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const chunk = Buffer.from(value);
+      size += chunk.length;
+      if (size > maximumBytes) {
+        await reader.cancel().catch(() => undefined);
+        throw new Error("单张图片超过 80 MB 安全限制");
+      }
+      chunks.push(chunk);
+    }
+  } finally {
+    reader.releaseLock?.();
+  }
+  return Buffer.concat(chunks, size);
+}
+
+async function fetchAllowedMedia(fetchRequest, initialUrl, options) {
+  let currentUrl = initialUrl;
+  for (let redirectCount = 0; redirectCount <= 4; redirectCount += 1) {
+    const response = await fetchRequest(currentUrl, { ...options, redirect: "manual" });
+    if (![301, 302, 303, 307, 308].includes(response.status)) return response;
+    const location = response.headers.get("location");
+    let redirectedUrl = "";
+    try {
+      redirectedUrl = normalizeMediaUrl(new URL(location, currentUrl).toString());
+    } catch {
+      redirectedUrl = "";
+    }
+    if (!redirectedUrl) throw new Error("图片下载重定向到了不受信任的地址");
+    currentUrl = redirectedUrl;
+  }
+  throw new Error("图片下载重定向次数超过安全限制");
+}
+
+async function downloadMedia({ sourceUrl, uin, signal }, dependencies = {}) {
   const safeUrl = normalizeMediaUrl(sourceUrl);
   if (!safeUrl) throw new Error("媒体地址不在 QQ 空间允许列表中");
+  const fetchRequest = dependencies.fetch || net.fetch;
   const variants = [
     { credentials: "include", referer: QZONE_USER_URL(uin) },
     { credentials: "omit", referer: "https://user.qzone.qq.com/" },
@@ -350,10 +403,9 @@ async function downloadMedia({ sourceUrl, uin, signal }) {
   let lastError;
   for (const variant of variants) {
     try {
-      const response = await net.fetch(safeUrl, {
+      const response = await fetchAllowedMedia(fetchRequest, safeUrl, {
         method: "GET",
         credentials: variant.credentials,
-        redirect: "follow",
         signal,
         headers: {
           accept: "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
@@ -361,12 +413,13 @@ async function downloadMedia({ sourceUrl, uin, signal }) {
         },
       });
       if (!response.ok) throw new Error(`图片下载失败（HTTP ${response.status}）`);
+      const finalUrl = normalizeMediaUrl(response.url || safeUrl);
+      if (!finalUrl) throw new Error("图片下载重定向到了不受信任的地址");
       const contentType = String(response.headers.get("content-type") || "application/octet-stream").split(";", 1)[0].trim().toLowerCase();
-      if (!contentType.startsWith("image/")) throw new Error(`媒体响应类型异常：${contentType}`);
-      const bytes = Buffer.from(await response.arrayBuffer());
+      if (!SAFE_IMAGE_TYPES.has(contentType)) throw new Error(`媒体响应类型异常：${contentType}`);
+      const bytes = await readLimitedResponseBody(response);
       if (!bytes.length) throw new Error("图片响应为空");
-      if (bytes.length > 80 * 1024 * 1024) throw new Error("单张图片超过 80 MB 安全限制");
-      return { bytes, contentType, finalUrl: response.url || safeUrl };
+      return { bytes, contentType, finalUrl };
     } catch (error) {
       if (signal?.aborted) throw error;
       lastError = error;
@@ -403,4 +456,4 @@ function createCollectionPlan(options) {
   }));
 }
 
-module.exports = { FEEDS3_PAGE_SIZE, LIKE_LIST_PAGE_SIZE, MOOD_PAGE_SIZE, abortableDelay, buildFeeds3Url, buildLikeListUrl, buildMoodListUrl, createCollectionPlan, downloadMedia, fetchLikeList, fetchLikeListPageOnce, fetchMoodCategoryPageOnce, fetchMoodPage, fetchMoodPageOnce, probeSession };
+module.exports = { FEEDS3_PAGE_SIZE, LIKE_LIST_PAGE_SIZE, MAX_MEDIA_BYTES, MOOD_PAGE_SIZE, SAFE_IMAGE_TYPES, abortableDelay, buildFeeds3Url, buildLikeListUrl, buildMoodListUrl, createCollectionPlan, downloadMedia, fetchAllowedMedia, fetchLikeList, fetchLikeListPageOnce, fetchMoodCategoryPageOnce, fetchMoodPage, fetchMoodPageOnce, probeSession, readLimitedResponseBody };

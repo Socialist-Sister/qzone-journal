@@ -1,0 +1,67 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  windows-release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Verify tag matches package version
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          if ("v$version" -ne "${{ github.ref_name }}") { throw "Tag and package version differ" }
+      - run: pnpm run test:all
+      - name: Build installer and unpacked app
+        env:
+          CSC_LINK: ${{ secrets.WINDOWS_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CSC_KEY_PASSWORD }}
+        run: pnpm run desktop:dist
+      - run: pnpm run release:portable
+      - run: pnpm run release:metadata
+      - uses: actions/upload-artifact@v4
+        with:
+          name: qzone-journal-${{ github.ref_name }}
+          path: |
+            release/*.exe
+            release/*.blockmap
+            release/latest.yml
+            release/*.zip
+            release/SHA256SUMS.txt
+            release/SBOM.cdx.json
+            release/THIRD_PARTY_LICENSES.json
+      - name: Publish GitHub release
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $version = $tag.TrimStart('v')
+          $assets = @(
+            "release/QZoneJournal-$version-x64.exe",
+            "release/QZoneJournal-$version-x64.exe.blockmap",
+            "release/QZoneJournal-$version-portable.zip",
+            "release/latest.yml",
+            "release/SHA256SUMS.txt",
+            "release/SBOM.cdx.json",
+            "release/THIRD_PARTY_LICENSES.json"
+          )
+          foreach ($asset in $assets) { if (-not (Test-Path -LiteralPath $asset)) { throw "Missing release asset: $asset" } }
+          $arguments = @("release", "create", $tag, "--title", $tag, "--generate-notes")
+          if ($version.EndsWith("-alpha")) { $arguments += "--prerelease" }
+          $arguments += $assets
+          & gh @arguments
+        env:
+          GH_TOKEN: ${{ github.token }}

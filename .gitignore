@@ -2,6 +2,7 @@ node_modules/
 .pnpm-store/
 dist/
 release/
+tmp/
 audit/
 tests/audit-capture.cjs
 .design-references/

@@ -29,3 +29,4 @@ jobs:
       - run: pnpm run test:desktop
       - run: pnpm run test:ai-compat
       - run: pnpm run test:sites
+      - run: pnpm run test:security

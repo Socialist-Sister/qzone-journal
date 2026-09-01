@@ -166,7 +166,8 @@ async function run() {
     return { repaired: true, quarantinedEntries: 0, mediaMarkedForRedownload: 0 };
   });
   ipcMain.handle("desktop:qzone:cancel-collection", () => ({ cancelled: true }));
-  ipcMain.handle("desktop:app:info", () => ({ name: "空间备份", version: "0.5.0-alpha", platform: process.platform, packaged: false }));
+  ipcMain.handle("desktop:app:info", () => ({ name: "空间备份", version: "0.6.0-alpha", platform: process.platform, packaged: false }));
+  ipcMain.handle("desktop:app:check-for-updates", () => ({ checked: true, updateAvailable: false, currentVersion: "0.6.0-alpha", latestVersion: "0.6.0-alpha" }));
   const window = new BrowserWindow({
     width: 1120,
     height: 720,
@@ -180,7 +181,10 @@ async function run() {
     },
   });
 
+  window.webContents.setZoomFactor(1);
   await window.loadFile(path.join(__dirname, "..", "dist", "client", "index.html"));
+  window.webContents.setZoomFactor(1);
+  await new Promise((resolve) => setTimeout(resolve, 30));
   await window.webContents.executeJavaScript(`localStorage.setItem("qzone-journal-export-anonymize", "true")`);
 
   const result = await window.webContents.executeJavaScript(`({
@@ -190,7 +194,7 @@ async function run() {
       .every((method) => typeof window.desktop?.window?.[method] === "function"),
     hasDirectoryBridge: ["getBackupDirectory", "selectBackupDirectory", "openBackupDirectory"]
       .every((method) => typeof window.desktop?.dialogs?.[method] === "function"),
-    hasAppBridge: ["getInfo", "exportDiagnostics"].every((method) => typeof window.desktop?.app?.[method] === "function"),
+    hasAppBridge: ["getInfo", "checkForUpdates", "openRelease", "exportDiagnostics"].every((method) => typeof window.desktop?.app?.[method] === "function"),
     hasAiBridge: ["getConfig", "addProvider", "updateProvider", "deleteProvider", "detectModels", "testConnection", "generateReview", "askArchive"]
       .every((method) => typeof window.desktop?.ai?.[method] === "function"),
     hasQzoneBridge: ["getSessionStatus", "listAccounts", "switchAccount", "addAccount", "deleteAccount", "openLogin", "startCollection", "readArchive", "exportArchive", "repairArchive", "cancelCollection", "onCollectorEvent", "onExportEvent"]
@@ -340,10 +344,13 @@ async function run() {
     await new Promise((resolve) => setTimeout(resolve, 30));
     findButton("关于")?.click();
     await new Promise((resolve) => setTimeout(resolve, 30));
+    findButton("检查新版本")?.click();
+    await new Promise((resolve) => setTimeout(resolve, 40));
     const result = {
-      showsCurrentVersion: document.body.innerText.includes("当前版本：0.5.0-alpha"),
-      labelsManualUpdateAccurately: Boolean(findButton("查看新版本")) && !findButton("检查更新"),
+      showsCurrentVersion: document.body.innerText.includes("当前版本：0.6.0-alpha"),
+      checksUpdatesInApp: Boolean(findButton("检查新版本")) && document.body.innerText.includes("GitHub 上最新的公开版本"),
       explainsTemporarySession: document.body.innerText.includes("采集结束后自动清除临时会话"),
+      readableSmallText: parseFloat(getComputedStyle(document.querySelector(".about-product-copy small")).fontSize) >= 11,
     };
     findButton("首页")?.click();
     await new Promise((resolve) => setTimeout(resolve, 20));
@@ -351,8 +358,27 @@ async function run() {
   })()`);
   process.stdout.write(`Electron about flow: ${JSON.stringify(aboutFlow)}\n`);
   assert.equal(aboutFlow.showsCurrentVersion, true);
-  assert.equal(aboutFlow.labelsManualUpdateAccurately, true);
+  assert.equal(aboutFlow.checksUpdatesInApp, true);
   assert.equal(aboutFlow.explainsTemporarySession, true);
+  assert.equal(aboutFlow.readableSmallText, true);
+
+  window.webContents.setZoomFactor(2);
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  const zoomFlow = await window.webContents.executeJavaScript(`({
+    zoomFactor: window.devicePixelRatio,
+    noHorizontalOverflow: document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1,
+    dimensions: { innerWidth: window.innerWidth, clientWidth: document.documentElement.clientWidth, scrollWidth: document.documentElement.scrollWidth },
+    overflowers: [...document.querySelectorAll("body *")].filter((element) => element.getBoundingClientRect().right > window.innerWidth + 1).slice(0, 8).map((element) => ({ className: element.className, right: Math.round(element.getBoundingClientRect().right), width: Math.round(element.getBoundingClientRect().width) })),
+    navReachable: ["首页", "我的档案", "AI 回顾", "设置"].every((label) => Boolean(document.querySelector('.titlebar-nav-item[aria-label="' + label + '"]'))),
+    focusVisibleRulesLoaded: [...document.styleSheets].some((sheet) => { try { return [...sheet.cssRules].some((rule) => rule.cssText.includes("textarea:focus-visible")); } catch { return false; } })
+  })`);
+  process.stdout.write(`Electron 200% zoom flow: ${JSON.stringify(zoomFlow)}\n`);
+  assert.ok(zoomFlow.zoomFactor >= 2);
+  assert.equal(zoomFlow.noHorizontalOverflow, true);
+  assert.equal(zoomFlow.navReachable, true);
+  assert.equal(zoomFlow.focusVisibleRulesLoaded, true);
+  window.webContents.setZoomFactor(1);
+  await new Promise((resolve) => setTimeout(resolve, 50));
   if (process.env.QZONE_VISUAL_CAPTURE_DIR) {
     const captureDirectory = path.resolve(process.env.QZONE_VISUAL_CAPTURE_DIR);
     await window.webContents.executeJavaScript(`(async () => {

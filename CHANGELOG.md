@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.6.0-alpha] - 2026-09-01
+
+### 桌面安全边界
+
+- 主窗口加入 CSP、精确的开发源与打包文件根目录校验，默认拒绝非必要 Electron 权限，并禁止 WebView 与拖放导航。
+- 外部导航只接受无凭据 HTTPS；更新下载入口进一步限定为 GitHub Release 页面。
+- QQ 空间图片下载会在重定向后再次校验媒体域名，只接受安全位图类型，并同时执行 Content-Length 预检与 80 MB 流式硬上限。
+- 采集启动前检查保存位置至少有 128 MB 可用空间；写入过程中遇到磁盘耗尽会停止任务并保留恢复点。
+
+### 无障碍与缩放
+
+- 对话框统一圈定键盘焦点，支持 Esc 关闭并在关闭后将焦点还给原操作；图片查看器继续保留方向键与缩放快捷操作。
+- 表单、选择框、文本区和自定义焦点目标统一显示清晰焦点环，新增 Windows 强制高对比度样式。
+- 将 8–10px 辅助文字提高到最低 11px，并修复字号调整后的 AI 模型选择与重新生成按钮对齐。
+- 修复标题栏响应式选择器优先级，在 200% 缩放下不再产生横向溢出；新增自动化缩放回归。
+
+### 更新与发行工程
+
+- 设置 → 关于新增 GitHub 版本检查，显示是否存在新版本及校验值状态；仍由用户手动下载，不在无代码签名时执行静默更新。
+- 加入正式应用图标和当前用户安装配置；GitHub Actions 可在配置证书后签名构建。
+- 新增标签触发的 Windows Release 工作流，自动运行全量回归、生成安装版与免安装版，并附带 SHA-256、CycloneDX SBOM 和生产依赖许可清单。
+- 新增 URL、权限、媒体限制、版本排序、低磁盘、中文路径、Release 配置和 200% 缩放回归。
+
+### 尚未解除的 Alpha 门槛
+
+- 当前开发环境没有可信 Windows 代码签名证书，自动安装更新与失败回滚因此保持禁用。
+- Windows 10/11 干净系统、SmartScreen 信誉和 WPS 打开 DOCX 仍需真实环境人工验收。
+
 ## [0.5.0-alpha] - 2026-09-01
 
 ### 多格式档案导出
@@ -217,6 +245,7 @@
 - QQ 非公开接口可能随服务端变化。
 - 安装包尚未进行代码签名。
 
+[0.6.0-alpha]: https://github.com/Socialist-Sister/qzone-journal/releases/tag/v0.6.0-alpha
 [0.5.0-alpha]: https://github.com/Socialist-Sister/qzone-journal/releases/tag/v0.5.0-alpha
 [0.4.1-alpha]: https://github.com/Socialist-Sister/qzone-journal/releases/tag/v0.4.1-alpha
 [0.4.0-alpha]: https://github.com/Socialist-Sister/qzone-journal/releases/tag/v0.4.0-alpha

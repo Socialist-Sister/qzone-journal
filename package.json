@@ -1,6 +1,6 @@
 {
   "name": "qzone-journal",
-  "version": "0.5.0-alpha",
+  "version": "0.6.0-alpha",
   "description": "Local-first QQ Space archive desktop application.",
   "author": "QZone Journal Contributors",
   "license": "MIT",
@@ -23,6 +23,8 @@
     "build:web": "vite build",
     "desktop:pack": "pnpm run build:web && electron-builder --dir",
     "desktop:dist": "pnpm run build:web && electron-builder --win nsis",
+    "release:portable": "node scripts/prepare-portable.mjs",
+    "release:metadata": "node scripts/generate-release-metadata.mjs",
     "preview": "vite preview",
     "test:desktop": "pnpm run build:web && electron tests/electron-smoke.cjs",
     "test:collector": "electron tests/collector-process-smoke.cjs",
@@ -31,7 +33,9 @@
     "test:export": "electron tests/export-artifact-smoke.cjs",
     "test:performance": "node --test tests/archive-performance.test.cjs",
     "test:ai-compat": "electron tests/ai-compat-smoke.cjs",
-    "test:sites": "node --test tests/sites-worker.test.mjs"
+    "test:sites": "node --test tests/sites-worker.test.mjs",
+    "test:security": "node --test tests/security.test.cjs",
+    "test:all": "pnpm run test:archive && pnpm run test:security && pnpm run test:collector && pnpm run test:session && pnpm run test:desktop && pnpm run test:export && pnpm run test:performance && pnpm run test:ai-compat && pnpm run build && pnpm run test:sites"
   },
   "devDependencies": {
     "@phosphor-icons/react": "^2.1.10",
@@ -56,9 +60,11 @@
     "files": [
       "dist/client/**/*",
       "desktop/**/*",
+      "build/icon.png",
       "package.json"
     ],
     "win": {
+      "icon": "build/icon.png",
       "target": [
         "nsis"
       ],
@@ -66,6 +72,8 @@
     },
     "nsis": {
       "oneClick": false,
+      "perMachine": false,
+      "allowElevation": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true

@@ -91,6 +91,49 @@ function LoadingSpinner({ size = 17 }) {
   return <span className="loading-spinner" style={{ width: size, height: size }} aria-hidden="true"><SpinnerGap size={size} /></span>;
 }
 
+function useDialogFocus({ canClose = true, onClose } = {}) {
+  const dialogRef = useRef(null);
+  const onCloseRef = useRef(onClose);
+  useEffect(() => { onCloseRef.current = onClose; }, [onClose]);
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (!dialog) return undefined;
+    const previous = document.activeElement;
+    const focusableSelector = "button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex='-1'])";
+    const focusables = () => [...dialog.querySelectorAll(focusableSelector)].filter((item) => item.offsetParent !== null);
+    (dialog.querySelector("[data-autofocus]") || focusables()[0] || dialog).focus({ preventScroll: true });
+    const handleKeyDown = (event) => {
+      if (event.key === "Escape" && canClose && onCloseRef.current) {
+        event.preventDefault();
+        onCloseRef.current();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const items = focusables();
+      if (!items.length) {
+        event.preventDefault();
+        dialog.focus();
+        return;
+      }
+      const first = items[0];
+      const last = items[items.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    dialog.addEventListener("keydown", handleKeyDown);
+    return () => {
+      dialog.removeEventListener("keydown", handleKeyDown);
+      if (previous instanceof HTMLElement && previous.isConnected) previous.focus({ preventScroll: true });
+    };
+  }, [canClose]);
+  return dialogRef;
+}
+
 function accountDisplayName(account) {
   return account?.nickname || account?.accountLabel || (account?.uin ? `QQ ${account.uin}` : "QQ 账号");
 }
@@ -426,6 +469,7 @@ function MediaGrid({ images, onOpen }) {
 }
 
 function ImageViewer({ images, index, onChange, onClose }) {
+  const dialogRef = useDialogFocus({ canClose: false });
   const stageRef = useRef(null);
   const imageRef = useRef(null);
   const dragRef = useRef(null);
@@ -544,7 +588,7 @@ function ImageViewer({ images, index, onChange, onClose }) {
   };
 
   return (
-    <div className={`image-viewer ${images.length === 1 ? "single-image" : ""}`} role="dialog" aria-modal="true" aria-label="图片查看器" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+    <div ref={dialogRef} tabIndex={-1} className={`image-viewer ${images.length === 1 ? "single-image" : ""}`} role="dialog" aria-modal="true" aria-label="图片查看器" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
       <div className="image-viewer-toolbar">
         <div className="image-viewer-meta"><span>{index + 1} / {images.length}</span><small>滚轮缩放 · 放大后拖动</small></div>
         <div className="viewer-zoom-controls" aria-label="图片缩放控制">
@@ -706,6 +750,7 @@ function ArchiveExportDialog({ filter, query, onClose }) {
   const [progress, setProgress] = useState({ progress: 0, message: "正在准备导出…" });
   const [result, setResult] = useState(null);
   const [error, setError] = useState("");
+  const dialogRef = useDialogFocus({ canClose: stage !== "progress", onClose });
 
   useEffect(() => window.desktop?.qzone?.onExportEvent?.((payload) => {
     setProgress({ progress: Number(payload?.progress) || 0, message: payload?.message || "正在导出…" });
@@ -756,7 +801,7 @@ function ArchiveExportDialog({ filter, query, onClose }) {
 
   return (
     <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && stage !== "progress" && onClose()}>
-      <section className="backup-dialog export-dialog" role="dialog" aria-modal="true" aria-labelledby="export-dialog-title">
+      <section ref={dialogRef} tabIndex={-1} className="backup-dialog export-dialog" role="dialog" aria-modal="true" aria-labelledby="export-dialog-title">
         {stage !== "progress" && <button className="dialog-close" type="button" onClick={onClose} aria-label="关闭"><X size={22} /></button>}
         {stage === "options" && (
           <>
@@ -1368,7 +1413,9 @@ function SettingsView({ section, onSectionChange, aiConfig, onAiConfigChange, ar
   const [anonymous, setAnonymous] = useState(readExportAnonymizePreference);
   const [notice, setNotice] = useState("");
   const [backupDirectory, setBackupDirectory] = useState("文档/空间备份");
-  const [appVersion, setAppVersion] = useState("0.5.0-alpha");
+  const [appVersion, setAppVersion] = useState("0.6.0-alpha");
+  const [checkingUpdates, setCheckingUpdates] = useState(false);
+  const [updateResult, setUpdateResult] = useState(null);
   const [providerEditor, setProviderEditor] = useState(null);
   const [manualModel, setManualModel] = useState("");
   const [detectedModels, setDetectedModels] = useState([]);
@@ -1445,6 +1492,31 @@ function SettingsView({ section, onSectionChange, aiConfig, onAiConfigChange, ar
       showNotice(readableError(error));
     } finally {
       setExportingDiagnostics(false);
+    }
+  };
+
+  const checkUpdates = async () => {
+    if (!window.desktop?.app?.checkForUpdates) {
+      showNotice("版本检查仅在桌面版中可用");
+      return;
+    }
+    setCheckingUpdates(true);
+    try {
+      const result = await window.desktop.app.checkForUpdates();
+      setUpdateResult(result);
+      showNotice(result.updateAvailable ? `发现新版本 ${result.latestVersion}` : "当前已是最新版本");
+    } catch (error) {
+      showNotice(readableError(error));
+    } finally {
+      setCheckingUpdates(false);
+    }
+  };
+
+  const openLatestRelease = async () => {
+    try {
+      await window.desktop?.app?.openRelease?.(updateResult?.releaseUrl);
+    } catch (error) {
+      showNotice(readableError(error));
     }
   };
 
@@ -1752,8 +1824,12 @@ function SettingsView({ section, onSectionChange, aiConfig, onAiConfigChange, ar
                     <span>把自己的 QQ 空间整理成可长期保存的本地档案</span>
                     <small>当前版本：{appVersion}</small>
                   </div>
-                  <button className="outline-action" type="button" onClick={() => openProjectPage("/releases")}>查看新版本</button>
+                  <div className="about-update-actions">
+                    <button className="outline-action" type="button" onClick={checkUpdates} disabled={checkingUpdates}>{checkingUpdates ? <><LoadingSpinner size={15} />正在检查…</> : "检查新版本"}</button>
+                    {updateResult?.updateAvailable && <button className="text-action" type="button" onClick={openLatestRelease}>下载 {updateResult.latestVersion}</button>}
+                  </div>
                 </div>
+                {updateResult && <p className="about-update-status" role="status">{updateResult.updateAvailable ? `有新版本可用${updateResult.checksumsAvailable ? "，发布页提供 SHA-256 校验值" : ""}。安装前请核对发布说明。` : "当前版本已经是 GitHub 上最新的公开版本。"}</p>}
               </article>
 
               <article className="settings-card">
@@ -1782,6 +1858,7 @@ function DemoImportDialog({ onClose, onComplete }) {
   const [stage, setStage] = useState("ready");
   const [progress, setProgress] = useState(0);
   const stats = getDemoStats(demoArchive);
+  const dialogRef = useDialogFocus({ canClose: stage !== "importing", onClose });
 
   useEffect(() => {
     if (stage !== "importing") return undefined;
@@ -1800,7 +1877,7 @@ function DemoImportDialog({ onClose, onComplete }) {
 
   return (
     <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && stage !== "importing" && onClose()}>
-      <section className="backup-dialog demo-import-dialog" role="dialog" aria-modal="true" aria-labelledby="demo-dialog-title">
+      <section ref={dialogRef} tabIndex={-1} className="backup-dialog demo-import-dialog" role="dialog" aria-modal="true" aria-labelledby="demo-dialog-title">
         {stage !== "importing" && (
           <button className="dialog-close" type="button" onClick={onClose} aria-label="关闭"><X size={22} /></button>
         )}
@@ -1861,6 +1938,7 @@ function BackupDialog({ onClose, onComplete, onAccountChange }) {
   const [backupDirectory, setBackupDirectory] = useState("文档/空间备份");
   const activeJobIdRef = useRef("");
   const nativeCollectorAvailable = Boolean(window.desktop?.qzone?.startCollection);
+  const dialogRef = useDialogFocus({ canClose: step !== "progress", onClose });
 
   useEffect(() => {
     if (!window.desktop?.qzone?.onCollectorEvent) return undefined;
@@ -1926,14 +2004,6 @@ function BackupDialog({ onClose, onComplete, onAccountChange }) {
     }, 180);
     return () => window.clearInterval(timer);
   }, [nativeCollectorAvailable, step]);
-
-  useEffect(() => {
-    const onKeyDown = (event) => {
-      if (event.key === "Escape" && step !== "progress") onClose();
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [onClose, step]);
 
   const demoTotal = getDemoStats(demoArchive).total;
 
@@ -2014,7 +2084,7 @@ function BackupDialog({ onClose, onComplete, onAccountChange }) {
 
   return (
     <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && step !== "progress" && onClose()}>
-      <section className="backup-dialog" role="dialog" aria-modal="true" aria-labelledby="dialog-title">
+      <section ref={dialogRef} tabIndex={-1} className="backup-dialog" role="dialog" aria-modal="true" aria-labelledby="dialog-title">
         {step !== "progress" && step !== "success" && (
           <button className="dialog-close" type="button" onClick={onClose} aria-label="关闭"><X size={22} /></button>
         )}

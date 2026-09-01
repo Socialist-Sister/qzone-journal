@@ -24,6 +24,8 @@ contextBridge.exposeInMainWorld("desktop", Object.freeze({
   }),
   app: Object.freeze({
     getInfo: () => invoke("desktop:app:info"),
+    checkForUpdates: () => invoke("desktop:app:check-for-updates"),
+    openRelease: (releaseUrl) => invoke("desktop:app:open-release", String(releaseUrl || "")),
     exportDiagnostics: () => invoke("desktop:app:export-diagnostics"),
   }),
   qzone: Object.freeze({

@@ -83,6 +83,10 @@ function attribute(source, name) {
   return match ? decodeHtmlEntities(match[1]) : "";
 }
 
+function hostMatches(host, allowedHost) {
+  return host === allowedHost || host.endsWith(`.${allowedHost}`);
+}
+
 function normalizeMediaUrl(value) {
   let candidate = decodeHtmlEntities(String(value || "").trim());
   if (candidate.startsWith("//")) candidate = `https:${candidate}`;
@@ -91,10 +95,10 @@ function normalizeMediaUrl(value) {
     const parsed = new URL(candidate);
     if (parsed.protocol !== "https:") return "";
     const host = parsed.hostname.toLowerCase();
-    const allowed = host.endsWith("qpic.cn")
-      || host.includes("photo.store.qq.com")
-      || host.endsWith("photo.qq.com")
-      || host.endsWith("qzone.qq.com");
+    const allowed = hostMatches(host, "qpic.cn")
+      || hostMatches(host, "photo.store.qq.com")
+      || hostMatches(host, "photo.qq.com")
+      || hostMatches(host, "qzone.qq.com");
     if (!allowed || host.includes("qlogo")) return "";
     return parsed.toString();
   } catch {
@@ -110,7 +114,7 @@ function normalizeExternalUrl(value) {
     const parsed = new URL(candidate);
     if (parsed.protocol !== "https:") return "";
     const host = parsed.hostname.toLowerCase();
-    if (host.endsWith("qpic.cn") || host.includes("photo.store.qq.com") || host.endsWith("photo.qq.com")) return "";
+    if (hostMatches(host, "qpic.cn") || hostMatches(host, "photo.store.qq.com") || hostMatches(host, "photo.qq.com")) return "";
     if (host === "c.pc.qq.com" || host === "url.cn") {
       for (const name of ["pfurl", "url", "target"]) {
         const nested = parsed.searchParams.get(name);

@@ -205,6 +205,11 @@ async function run(job) {
               return { ...media, localPath: stored.relativePath, contentType: stored.contentType, size: stored.size };
             } catch (error) {
               if (activeAbortController.signal.aborted) throw error;
+              if (error?.code === "ENOSPC") {
+                const diskError = new Error("保存位置空间不足，已安全停止并保留恢复点");
+                diskError.code = "QZONE_DISK_SPACE_LOW";
+                throw diskError;
+              }
               if (mediaFailures.length < 100) mediaFailures.push({ sourceUrl: media.sourceUrl, error: String(error?.message || error).slice(0, 300) });
               return { ...media, downloadError: String(error?.message || error).slice(0, 300) };
             }

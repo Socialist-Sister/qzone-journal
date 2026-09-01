@@ -3,6 +3,9 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { createHash, randomUUID } = require("node:crypto");
 const { pathToFileURL } = require("node:url");
+const { isSafeExternalUrl, isTrustedAppUrl, restrictSessionPermissions } = require("./security.cjs");
+const { assertMinimumFreeSpace } = require("./storage-safety.cjs");
+const { checkForUpdates, validReleaseUrl } = require("./update.cjs");
 const { sanitizeCollectionOptions } = require("./archive/schema.cjs");
 const { ArchiveStore } = require("./archive/store.cjs");
 const {
@@ -345,9 +348,18 @@ function parseReview(content) {
   };
 }
 
-function isTrustedAppUrl(targetUrl) {
-  if (app.isPackaged) return targetUrl.startsWith("file://");
-  return targetUrl.startsWith(DEV_SERVER_URL);
+function trustedAppUrl(targetUrl) {
+  return isTrustedAppUrl(targetUrl, {
+    packaged: app.isPackaged,
+    devServerUrl: DEV_SERVER_URL,
+    clientRoot: path.join(__dirname, "..", "dist", "client"),
+  });
+}
+
+function openExternalHttps(targetUrl) {
+  if (!isSafeExternalUrl(targetUrl)) return false;
+  void shell.openExternal(targetUrl);
+  return true;
 }
 
 function createMainWindow() {
@@ -359,6 +371,7 @@ function createMainWindow() {
     show: false,
     frame: false,
     title: "空间备份",
+    icon: path.join(__dirname, "..", "build", "icon.png"),
     backgroundColor: "#fbf9f4",
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
@@ -366,8 +379,14 @@ function createMainWindow() {
       nodeIntegration: false,
       sandbox: true,
       webSecurity: true,
+      webviewTag: false,
+      navigateOnDragDrop: false,
+      spellcheck: false,
+      enableWebSQL: false,
     },
   });
+
+  restrictSessionPermissions(mainWindow.webContents.session);
 
   mainWindow.once("ready-to-show", () => mainWindow?.show());
   const sendMaximizedState = () => {
@@ -379,14 +398,27 @@ function createMainWindow() {
   mainWindow.on("unmaximize", sendMaximizedState);
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (url.startsWith("https://")) void shell.openExternal(url);
+    openExternalHttps(url);
     return { action: "deny" };
   });
 
+  mainWindow.webContents.on("will-attach-webview", (event) => event.preventDefault());
+
   mainWindow.webContents.on("will-navigate", (event, url) => {
-    if (isTrustedAppUrl(url)) return;
+    if (trustedAppUrl(url)) return;
     event.preventDefault();
-    if (url.startsWith("https://")) void shell.openExternal(url);
+    openExternalHttps(url);
+  });
+
+  mainWindow.webContents.on("before-input-event", (event, input) => {
+    if (!input.control || input.type !== "keyDown") return;
+    const key = String(input.key || "");
+    const current = mainWindow?.webContents.getZoomFactor() || 1;
+    if (["+", "=", "Add"].includes(key)) mainWindow?.webContents.setZoomFactor(Math.min(2, current + 0.1));
+    else if (["-", "Subtract"].includes(key)) mainWindow?.webContents.setZoomFactor(Math.max(1, current - 0.1));
+    else if (["0", "Insert"].includes(key)) mainWindow?.webContents.setZoomFactor(1);
+    else return;
+    event.preventDefault();
   });
 
   if (app.isPackaged) {
@@ -987,6 +1019,8 @@ async function startCollectorJob(sender, input) {
   const options = sanitizeCollectionOptions(input);
   const jobId = randomUUID();
   const archiveRoot = await defaultArchiveRoot(sessionStatus.uin);
+  await fs.mkdir(archiveRoot, { recursive: true });
+  await assertMinimumFreeSpace(archiveRoot);
   const child = utilityProcess.fork(path.join(__dirname, "collector", "worker.cjs"), [], {
     session: getQzoneSession(),
     stdio: "ignore",
@@ -1101,6 +1135,16 @@ ipcMain.handle("desktop:app:info", () => ({
   platform: process.platform,
   packaged: app.isPackaged,
 }));
+
+ipcMain.handle("desktop:app:check-for-updates", async () => checkForUpdates(app.getVersion(), {
+  signal: AbortSignal.timeout(15000),
+}));
+
+ipcMain.handle("desktop:app:open-release", async (_event, releaseUrl) => {
+  const trustedReleaseUrl = validReleaseUrl(releaseUrl);
+  if (!trustedReleaseUrl || !openExternalHttps(trustedReleaseUrl)) throw new Error("更新地址未通过安全检查");
+  return { opened: true };
+});
 
 ipcMain.handle("desktop:app:export-diagnostics", async (event) => exportDiagnosticBundle(windowFromEvent(event)));
 
