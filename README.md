@@ -88,4 +88,4 @@ pnpm run desktop:dist
 
 代码以 [MIT License](LICENSE) 发布。项目内图片素材与第三方依赖可能适用各自许可；发布或再分发时请保留对应说明。
 
-QQ 表情编号语义参考 [Koishi QFace](https://github.com/koishijs/QFace) 校验。应用不会打包 QFace 的表情素材，而是按原始 `[em]eNNN[/em]` 编号按需读取腾讯官方资源，并在资源不可用时使用本地图标兜底；相关表情素材版权归腾讯所有。
+QQ 表情编号语义参考 [Koishi QFace](https://github.com/koishijs/QFace) 校验。应用内按原始 `[em]eNNN[/em]` 编号读取腾讯官方资源，资源不可用时使用本地图标兜底；离线 HTML、PDF、DOCX 导出则使用 `/捂脸`、`/比心` 等文字名称。项目不打包 QFace 或腾讯的表情素材，相关表情素材版权归腾讯所有。
