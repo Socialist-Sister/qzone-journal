@@ -425,7 +425,16 @@ async function run() {
       showsArchivePath: document.querySelector(".archive-path")?.textContent.includes("QQ-5678-test") === true
     };
     findButton("打开我的档案")?.click();
-    await new Promise((resolve) => setTimeout(resolve, 40));
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const pendingDetail = document.querySelector(".archive-detail");
+      if (pendingDetail) {
+        const pendingRect = pendingDetail.getBoundingClientRect();
+        const pendingMaxHeight = parseFloat(getComputedStyle(pendingDetail).maxHeight);
+        const pendingAvailableHeight = window.innerHeight - pendingRect.top - 12;
+        if (pendingMaxHeight <= pendingAvailableHeight + 1 && window.innerHeight - pendingRect.bottom >= 10) break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    }
     result.openedRealArchive = document.body.innerText.includes("真实归档流程测试");
     result.showsNicknameProfile = document.body.innerText.includes("林屿的空间");
     result.showsExternalLink = document.querySelector('.detail-links a[href^="https://www.bilibili.com/"]')?.textContent.includes("转发的视频") === true;
