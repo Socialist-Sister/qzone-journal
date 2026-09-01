@@ -169,8 +169,8 @@ async function run() {
   ipcMain.handle("desktop:app:info", () => ({ name: "空间备份", version: "0.6.0-alpha", platform: process.platform, packaged: false }));
   ipcMain.handle("desktop:app:check-for-updates", () => ({ checked: true, updateAvailable: false, currentVersion: "0.6.0-alpha", latestVersion: "0.6.0-alpha" }));
   const window = new BrowserWindow({
-    width: 1120,
-    height: 720,
+    width: Number(process.env.QZONE_TEST_WIDTH) || 1120,
+    height: Number(process.env.QZONE_TEST_HEIGHT) || 720,
     show: Boolean(process.env.QZONE_VISUAL_CAPTURE_DIR),
     webPreferences: {
       preload: path.join(__dirname, "..", "desktop", "preload.cjs"),
@@ -379,7 +379,14 @@ async function run() {
   assert.equal(zoomFlow.navReachable, true);
   assert.equal(zoomFlow.focusVisibleRulesLoaded, true);
   window.webContents.setZoomFactor(1);
-  await new Promise((resolve) => setTimeout(resolve, 50));
+  let zoomRestored = false;
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    zoomRestored = window.webContents.getZoomFactor() === 1
+      && await window.webContents.executeJavaScript("window.innerWidth > 820");
+    if (zoomRestored) break;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  assert.equal(zoomRestored, true);
   if (process.env.QZONE_VISUAL_CAPTURE_DIR) {
     const captureDirectory = path.resolve(process.env.QZONE_VISUAL_CAPTURE_DIR);
     await window.webContents.executeJavaScript(`(async () => {
@@ -432,6 +439,14 @@ async function run() {
     result.longDetailScrolls = detail.classList.contains("is-scrollable") && detailStyle.overflowY === "auto" && detail.scrollHeight > detail.clientHeight;
     result.detailUsesViewportLimit = parseFloat(detailStyle.maxHeight) <= detailAvailableHeight + 1;
     result.detailKeepsBottomGap = detailBottomGap >= 10;
+    result.detailMetrics = {
+      viewport: { width: window.innerWidth, height: window.innerHeight },
+      top: detail.getBoundingClientRect().top,
+      bottom: detail.getBoundingClientRect().bottom,
+      maxHeight: detailStyle.maxHeight,
+      availableHeight: detailAvailableHeight,
+      bottomGap: detailBottomGap,
+    };
     result.replacedQqEmotion = document.querySelectorAll(".qq-emotion, .qq-emotion-fallback").length >= 2 && !document.body.innerText.includes("[em]e10264[/em]");
     result.qqEmotionUsesOfficialAsset = document.querySelector('.qq-emotion[src*="qzonestyle.gtimg.cn/qzone/em/e10264.gif"]') !== null;
     result.normalizedQqMentions = document.body.innerText.includes("@Lorrinius.Asuka.")
