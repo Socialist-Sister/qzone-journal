@@ -425,7 +425,7 @@ async function run() {
       showsArchivePath: document.querySelector(".archive-path")?.textContent.includes("QQ-5678-test") === true
     };
     findButton("打开我的档案")?.click();
-    for (let attempt = 0; attempt < 20; attempt += 1) {
+    for (let attempt = 0; attempt < 50; attempt += 1) {
       const pendingDetail = document.querySelector(".archive-detail");
       if (pendingDetail) {
         const pendingRect = pendingDetail.getBoundingClientRect();

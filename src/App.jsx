@@ -966,10 +966,15 @@ function ArchiveView({ archive, onStart, onImportDemo, onReadPage }) {
     window.addEventListener("resize", updateDetailViewport);
     detail.addEventListener("load", updateDetailViewport, true);
     updateDetailViewport();
-    const settleTimers = [0, 80, 240].map((delay) => window.setTimeout(updateDetailViewport, delay));
+    let settleAttempts = 0;
+    const settleTimer = window.setInterval(() => {
+      updateDetailViewport();
+      settleAttempts += 1;
+      if (settleAttempts >= 20) window.clearInterval(settleTimer);
+    }, 100);
     return () => {
       cancelAnimationFrame(frame);
-      settleTimers.forEach((timer) => window.clearTimeout(timer));
+      window.clearInterval(settleTimer);
       resizeObserver.disconnect();
       mutationObserver.disconnect();
       scrollRoot?.removeEventListener("scroll", updateDetailViewport);
