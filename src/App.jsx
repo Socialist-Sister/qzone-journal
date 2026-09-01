@@ -966,8 +966,10 @@ function ArchiveView({ archive, onStart, onImportDemo, onReadPage }) {
     window.addEventListener("resize", updateDetailViewport);
     detail.addEventListener("load", updateDetailViewport, true);
     updateDetailViewport();
+    const settleTimers = [0, 80, 240].map((delay) => window.setTimeout(updateDetailViewport, delay));
     return () => {
       cancelAnimationFrame(frame);
+      settleTimers.forEach((timer) => window.clearTimeout(timer));
       resizeObserver.disconnect();
       mutationObserver.disconnect();
       scrollRoot?.removeEventListener("scroll", updateDetailViewport);
