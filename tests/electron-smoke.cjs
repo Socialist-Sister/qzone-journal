@@ -171,7 +171,7 @@ async function run() {
   const window = new BrowserWindow({
     width: Number(process.env.QZONE_TEST_WIDTH) || 1120,
     height: Number(process.env.QZONE_TEST_HEIGHT) || 720,
-    show: Boolean(process.env.QZONE_VISUAL_CAPTURE_DIR),
+    show: process.env.CI === "true" || Boolean(process.env.QZONE_VISUAL_CAPTURE_DIR),
     webPreferences: {
       preload: path.join(__dirname, "..", "desktop", "preload.cjs"),
       contextIsolation: true,
