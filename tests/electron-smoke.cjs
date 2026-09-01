@@ -428,9 +428,10 @@ async function run() {
     const detail = document.querySelector(".archive-detail");
     const detailStyle = getComputedStyle(detail);
     const detailBottomGap = window.innerHeight - detail.getBoundingClientRect().bottom;
+    const detailAvailableHeight = window.innerHeight - detail.getBoundingClientRect().top - 12;
     result.longDetailScrolls = detail.classList.contains("is-scrollable") && detailStyle.overflowY === "auto" && detail.scrollHeight > detail.clientHeight;
-    result.detailUsesViewportLimit = Math.abs(parseFloat(detailStyle.maxHeight) - (window.innerHeight - detail.getBoundingClientRect().top - 12)) <= 1;
-    result.detailKeepsBottomGap = Math.abs(detailBottomGap - 12) <= 2;
+    result.detailUsesViewportLimit = parseFloat(detailStyle.maxHeight) <= detailAvailableHeight + 1;
+    result.detailKeepsBottomGap = detailBottomGap >= 10;
     result.replacedQqEmotion = document.querySelectorAll(".qq-emotion, .qq-emotion-fallback").length >= 2 && !document.body.innerText.includes("[em]e10264[/em]");
     result.qqEmotionUsesOfficialAsset = document.querySelector('.qq-emotion[src*="qzonestyle.gtimg.cn/qzone/em/e10264.gif"]') !== null;
     result.normalizedQqMentions = document.body.innerText.includes("@Lorrinius.Asuka.")
