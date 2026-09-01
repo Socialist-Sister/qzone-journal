@@ -40,6 +40,7 @@ async function run() {
   let repairCalls = 0;
   let deleteAccountCalls = 0;
   let diagnosticExportCalls = 0;
+  const archiveExportCalls = [];
   let mockAccounts = {
     activeAccountId: "account-a",
     accounts: [
@@ -153,12 +154,19 @@ async function run() {
       ...Array.from({ length: 7 }, (_, index) => ({ id: "real-post-extra-" + index, type: "post", date: "2026-08-27T10:00:00+08:00", displayDate: "2026年8月27日 10:00", title: null, text: "用于让档案外层页面保持可滚动的测试内容 " + (index + 1), links: [], images: [], likes: [], comments: [] })),
     ],
   }));
+  ipcMain.handle("desktop:qzone:export-archive", async (event, options) => {
+    archiveExportCalls.push(options);
+    event.sender.send("desktop:qzone:export-event", { progress: 38, phase: "media", message: "正在处理配图 2/4…" });
+    await new Promise((resolve) => setTimeout(resolve, 90));
+    event.sender.send("desktop:qzone:export-event", { progress: 100, phase: "complete", message: "档案导出完成" });
+    return { exported: true, fileName: "林屿的空间-20260901.docx", format: "docx", counts: { entries: 8, media: 4, comments: 2, likes: 3 }, anonymized: false };
+  });
   ipcMain.handle("desktop:qzone:repair-archive", () => {
     repairCalls += 1;
     return { repaired: true, quarantinedEntries: 0, mediaMarkedForRedownload: 0 };
   });
   ipcMain.handle("desktop:qzone:cancel-collection", () => ({ cancelled: true }));
-  ipcMain.handle("desktop:app:info", () => ({ name: "空间备份", version: "0.4.1-alpha", platform: process.platform, packaged: false }));
+  ipcMain.handle("desktop:app:info", () => ({ name: "空间备份", version: "0.5.0-alpha", platform: process.platform, packaged: false }));
   const window = new BrowserWindow({
     width: 1120,
     height: 720,
@@ -173,6 +181,7 @@ async function run() {
   });
 
   await window.loadFile(path.join(__dirname, "..", "dist", "client", "index.html"));
+  await window.webContents.executeJavaScript(`localStorage.setItem("qzone-journal-export-anonymize", "true")`);
 
   const result = await window.webContents.executeJavaScript(`({
     title: document.title,
@@ -184,7 +193,7 @@ async function run() {
     hasAppBridge: ["getInfo", "exportDiagnostics"].every((method) => typeof window.desktop?.app?.[method] === "function"),
     hasAiBridge: ["getConfig", "addProvider", "updateProvider", "deleteProvider", "detectModels", "testConnection", "generateReview", "askArchive"]
       .every((method) => typeof window.desktop?.ai?.[method] === "function"),
-    hasQzoneBridge: ["getSessionStatus", "listAccounts", "switchAccount", "addAccount", "deleteAccount", "openLogin", "startCollection", "readArchive", "repairArchive", "cancelCollection", "onCollectorEvent"]
+    hasQzoneBridge: ["getSessionStatus", "listAccounts", "switchAccount", "addAccount", "deleteAccount", "openLogin", "startCollection", "readArchive", "exportArchive", "repairArchive", "cancelCollection", "onCollectorEvent", "onExportEvent"]
       .every((method) => typeof window.desktop?.qzone?.[method] === "function"),
     hasHomeAction: ["快速开始", "再次备份"].some((label) => document.body.innerText.includes(label)),
     hasNoBrowserAction: !document.body.innerText.includes("使用系统浏览器"),
@@ -332,7 +341,7 @@ async function run() {
     findButton("关于")?.click();
     await new Promise((resolve) => setTimeout(resolve, 30));
     const result = {
-      showsCurrentVersion: document.body.innerText.includes("当前版本：0.4.1-alpha"),
+      showsCurrentVersion: document.body.innerText.includes("当前版本：0.5.0-alpha"),
       labelsManualUpdateAccurately: Boolean(findButton("查看新版本")) && !findButton("检查更新"),
       explainsTemporarySession: document.body.innerText.includes("采集结束后自动清除临时会话"),
     };
@@ -508,6 +517,95 @@ async function run() {
   assert.equal(repairCalls, 1);
   assert.equal(loginCalls[0]?.force, false);
   assert.equal(loginCalls[1]?.force, true);
+
+  const archiveExportFlow = await window.webContents.executeJavaScript(`(async () => {
+    const findButton = (label) => [...document.querySelectorAll("button")].find((button) => button.textContent.trim() === label);
+    findButton("我的档案")?.click();
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    findButton("导出档案")?.click();
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    const dialog = document.querySelector(".export-dialog");
+    const formatOptions = [...document.querySelectorAll(".export-format-grid button")];
+    const docx = formatOptions.find((button) => button.textContent.includes("DOCX"));
+    docx?.click();
+    const selects = dialog.querySelectorAll("select");
+    const setValue = (element, value) => {
+      const setter = Object.getOwnPropertyDescriptor(element.constructor.prototype, "value").set;
+      setter.call(element, value);
+      element.dispatchEvent(new Event("change", { bubbles: true }));
+    };
+    setValue(selects[0], "dates");
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const dates = dialog.querySelectorAll('input[type="date"]');
+    setValue(dates[0], "2026-01-01");
+    setValue(dates[1], "2026-12-31");
+    const anonymousLabel = [...dialog.querySelectorAll(".export-check-list label")].find((label) => label.textContent.includes("匿名化好友"));
+    anonymousLabel?.querySelector('input[type="checkbox"]')?.click();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const requiredConfirmation = Boolean(document.querySelector(".export-privacy-confirm"));
+    document.querySelector('.export-privacy-confirm input[type="checkbox"]')?.click();
+    findButton("选择位置并导出")?.click();
+    await new Promise((resolve) => setTimeout(resolve, 45));
+    const remainedResponsive = document.body.innerText.includes("请稍候，窗口仍可正常响应")
+      && document.body.innerText.includes("正在处理配图 2/4");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const result = {
+      opened: Boolean(dialog),
+      hasFormats: ["HTML", "PDF", "DOCX"].every((label) => formatOptions.some((button) => button.textContent.includes(label))),
+      requiredConfirmation,
+      remainedResponsive,
+      completed: document.body.innerText.includes("林屿的空间-20260901.docx")
+        && document.body.innerText.includes("好友信息已匿名化") === false,
+    };
+    findButton("完成")?.click();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    return result;
+  })()`);
+  process.stdout.write(`Electron archive export flow: ${JSON.stringify(archiveExportFlow)}\n`);
+  assert.equal(archiveExportFlow.opened, true);
+  assert.equal(archiveExportFlow.hasFormats, true);
+  assert.equal(archiveExportFlow.requiredConfirmation, true);
+  assert.equal(archiveExportFlow.remainedResponsive, true);
+  assert.equal(archiveExportFlow.completed, true);
+  assert.equal(archiveExportCalls.length, 1);
+  assert.equal(archiveExportCalls[0].format, "docx");
+  assert.equal(archiveExportCalls[0].scope, "dates");
+  assert.equal(archiveExportCalls[0].dateFrom, "2026-01-01");
+  assert.equal(archiveExportCalls[0].dateTo, "2026-12-31");
+  assert.equal(archiveExportCalls[0].anonymize, false);
+  assert.equal(archiveExportCalls[0].confirmedPeople, true);
+
+  if (process.env.QZONE_VISUAL_CAPTURE_DIR) {
+    const captureDirectory = path.resolve(process.env.QZONE_VISUAL_CAPTURE_DIR);
+    fs.mkdirSync(captureDirectory, { recursive: true });
+    const exportDialogMetrics = await window.webContents.executeJavaScript(`(async () => {
+      const findButton = (label) => [...document.querySelectorAll("button")].find((button) => button.textContent.trim() === label);
+      findButton("我的档案")?.click();
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      findButton("导出档案")?.click();
+      await new Promise((resolve) => setTimeout(resolve, 160));
+      const dialog = document.querySelector(".export-dialog");
+      const rect = dialog.getBoundingClientRect();
+      const formats = [...dialog.querySelectorAll(".export-format-grid button")].map((button) => button.getBoundingClientRect());
+      return {
+        open: Boolean(dialog),
+        insideViewport: rect.top >= 24 && rect.bottom <= window.innerHeight - 24,
+        top: rect.top,
+        bottom: rect.bottom,
+        viewport: window.innerHeight,
+        scrollAvailable: dialog.scrollHeight >= dialog.clientHeight,
+        formatHeightsMatch: Math.max(...formats.map((item) => item.height)) - Math.min(...formats.map((item) => item.height)) <= 1,
+      };
+    })()`);
+    await forceFreshFrame(window);
+    fs.writeFileSync(path.join(captureDirectory, "archive-export-dialog.png"), (await capturePageWithRetry(window)).toPNG());
+    process.stdout.write(`Electron export dialog visual metrics: ${JSON.stringify(exportDialogMetrics)}\n`);
+    assert.equal(exportDialogMetrics.open, true);
+    assert.equal(exportDialogMetrics.insideViewport, true);
+    assert.equal(exportDialogMetrics.scrollAvailable, true);
+    assert.equal(exportDialogMetrics.formatHeightsMatch, true);
+    await window.webContents.executeJavaScript(`document.querySelector('.export-dialog [aria-label="关闭"]')?.click()`);
+  }
 
   if (process.env.QZONE_VISUAL_CAPTURE_DIR) {
     const captureDirectory = path.resolve(process.env.QZONE_VISUAL_CAPTURE_DIR);
@@ -857,6 +955,7 @@ async function run() {
   ipcMain.removeHandler("desktop:qzone:open-login");
   ipcMain.removeHandler("desktop:qzone:start-collection");
   ipcMain.removeHandler("desktop:qzone:read-archive");
+  ipcMain.removeHandler("desktop:qzone:export-archive");
   ipcMain.removeHandler("desktop:qzone:repair-archive");
   ipcMain.removeHandler("desktop:qzone:cancel-collection");
 }

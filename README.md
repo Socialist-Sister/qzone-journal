@@ -3,7 +3,7 @@
 一款本地优先的 QQ 空间个人动态备份桌面应用。它通过 QQ 官方登录页面建立本机会话，将可读取的个人空间内容整理为版本化本地档案，并可接入用户自己的 OpenAI 兼容模型生成回顾。
 
 > [!WARNING]
-> 当前为 `v0.4.1-alpha` 早期测试版。QQ 空间没有面向本项目的稳定公开导出 API，采集能力可能因 QQ 页面或接口变化而失效。首次使用前请阅读下方“当前边界”，不要把它作为唯一备份。
+> 当前为 `v0.5.0-alpha` 早期测试版。QQ 空间没有面向本项目的稳定公开导出 API，采集能力可能因 QQ 页面或接口变化而失效。首次使用前请阅读下方“当前边界”，不要把它作为唯一备份。
 
 ## 已实现
 
@@ -16,15 +16,17 @@
 - 档案搜索、分类、详情、QQ 风格图片网格、全屏图片查看器，以及说说正文中的 QQ 表情显示。
 - 面向大档案的增量汇总索引、分页读取和虚拟时间线；已加入 1 万条动态、5 万个媒体引用的压力回归。
 - 评论/点赞采用 QQ 返回的总数，并与当前响应中可见的人员详情分开展示。
+- 将当前本地档案导出为单文件离线 HTML、A4 PDF 或 DOCX；支持全部档案、当前筛选、日期范围、原图/压缩图/无图策略以及互动信息匿名化。
 - 采集结果会标明适配器为正常、兼容模式或部分完成，避免把截断内容误报为完整备份。
 - 多个 OpenAI 兼容模型服务、模型自动检测、连接测试、AI 回顾与限定档案范围的追问。
 - API Key 使用 Electron `safeStorage` 加密；Cookie 不进入 React 页面或归档文件。
 
 ## 当前边界
 
-- 相册专项分页、视频、独立日志接口以及 Word、HTML、PDF 导出尚未实现。
+- 相册专项分页、视频和独立日志接口尚未实现；多格式导出只覆盖已经进入本地档案的内容。
 - “相册与视频”在当前 Alpha 中只能覆盖说说里已经出现的配图，不能视为完整相册备份。
 - 评论和点赞详情取决于 QQ 页面当时实际展开的内容，人员列表可能少于 QQ 显示的总数。
+- 原图导出可能生成很大的文件；对外分享前建议使用压缩副本并保持“匿名化好友”开启。
 - 本地档案是普通 JSON 和媒体文件，不进行额外加密。请将备份目录放在可信磁盘和受保护的系统账户中。
 - AI 功能会把相关档案文字和互动摘要发送到用户配置的模型服务，并可能产生费用。
 - 当前没有自动更新器；请以 GitHub Releases 页面发布的版本为准。
@@ -33,8 +35,8 @@
 
 从 [Releases](https://github.com/Socialist-Sister/qzone-journal/releases) 下载：
 
-- `QZoneJournal-0.4.1-alpha-x64.exe`：Windows 安装版。
-- `QZoneJournal-0.4.1-alpha-x64-portable.zip`：解压后直接运行的免安装版。
+- `QZoneJournal-0.5.0-alpha-x64.exe`：Windows 安装版。
+- `QZoneJournal-0.5.0-alpha-x64-portable.zip`：解压后直接运行的免安装版。
 
 当前 Alpha 安装包尚未进行商业代码签名，Windows 可能显示 SmartScreen 提示。请只从本仓库 Release 下载并核对 SHA-256。
 
@@ -58,6 +60,7 @@ pnpm dev:desktop
 ```bash
 pnpm run build
 pnpm run test:archive
+pnpm run test:export
 pnpm run test:collector
 pnpm run test:session
 pnpm run test:desktop

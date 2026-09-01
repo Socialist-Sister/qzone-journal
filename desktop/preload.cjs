@@ -35,6 +35,7 @@ contextBridge.exposeInMainWorld("desktop", Object.freeze({
     openLogin: (options = {}) => invoke("desktop:qzone:open-login", { force: options?.force === true }),
     startCollection: (options) => invoke("desktop:qzone:start-collection", options),
     readArchive: (options) => invoke("desktop:qzone:read-archive", options),
+    exportArchive: (options) => invoke("desktop:qzone:export-archive", options),
     repairArchive: () => invoke("desktop:qzone:repair-archive"),
     cancelCollection: (jobId) => invoke("desktop:qzone:cancel-collection", jobId),
     onCollectorEvent: (callback) => {
@@ -42,6 +43,12 @@ contextBridge.exposeInMainWorld("desktop", Object.freeze({
       const listener = (_event, payload) => callback(payload);
       ipcRenderer.on("desktop:qzone:collector-event", listener);
       return () => ipcRenderer.removeListener("desktop:qzone:collector-event", listener);
+    },
+    onExportEvent: (callback) => {
+      if (typeof callback !== "function") return () => undefined;
+      const listener = (_event, payload) => callback(payload);
+      ipcRenderer.on("desktop:qzone:export-event", listener);
+      return () => ipcRenderer.removeListener("desktop:qzone:export-event", listener);
     },
   }),
   ai: Object.freeze({
