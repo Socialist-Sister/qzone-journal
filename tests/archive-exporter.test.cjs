@@ -9,8 +9,16 @@ const {
   renderHtmlExport,
   sanitizeExportOptions,
 } = require("../desktop/archive/exporter.cjs");
+const { QZONE_EMOTION_NAMES, qzoneEmotionLabel } = require("../desktop/archive/qzone-emotion-names.cjs");
 
 const ONE_PIXEL_PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64");
+
+test("QZone emotion codes have semantic export labels and preserve unknown codes", () => {
+  assert.equal(Object.keys(QZONE_EMOTION_NAMES).length, 275);
+  assert.equal(qzoneEmotionLabel("10264"), "/捂脸");
+  assert.equal(qzoneEmotionLabel("e10319"), "/比心");
+  assert.equal(qzoneEmotionLabel("99999999"), "/QQ表情 e99999999");
+});
 
 function fixtureEntries() {
   return [
@@ -132,7 +140,8 @@ test("offline HTML embeds safe media and contains no active script surface", asy
   const html = await renderHtmlExport({ model, archiveRoot: root });
   assert.match(html, /Content-Security-Policy/);
   assert.match(html, /data:image\/png;base64,/);
-  assert.match(html, /QQ表情/);
+  assert.match(html, />\/捂脸<\/span>/);
+  assert.doesNotMatch(html, />QQ表情<\/span>/);
   assert.doesNotMatch(html, /javascript:|983109480|阿程|小周/);
   assert.equal((html.match(/<img /g) || []).length, 1);
   await fs.rm(root, { recursive: true, force: true });
@@ -144,4 +153,5 @@ test("DOCX export produces an OOXML package with Chinese archive content", async
   assert.ok(Buffer.isBuffer(output));
   assert.equal(output.subarray(0, 2).toString("ascii"), "PK");
   assert.ok(output.length > 5000);
+  assert.match(output.toString("binary"), /word\/document\.xml/);
 });

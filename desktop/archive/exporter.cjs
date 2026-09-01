@@ -15,6 +15,7 @@ const {
   TextRun,
 } = require("docx");
 const { normalizeQzoneMentions } = require("../collector/qzone-parser.cjs");
+const { qzoneEmotionLabel } = require("./qzone-emotion-names.cjs");
 
 const EXPORT_FORMATS = new Set(["html", "pdf", "docx"]);
 const EXPORT_SCOPES = new Set(["all", "filtered", "dates"]);
@@ -230,7 +231,11 @@ function escapeHtml(value) {
 }
 
 function htmlText(value) {
-  return escapeHtml(value).replace(/\[em\]e\d{1,8}\[\/em\]/gi, '<span class="qq-emotion-text">QQ表情</span>').replace(/\r?\n/g, "<br>");
+  return escapeHtml(value)
+    .replace(/\[em\]e(\d{1,8})\[\/em\]/gi, (_match, code) => (
+      `<span class="qq-emotion-text" title="QQ 表情 e${code}">${escapeHtml(qzoneEmotionLabel(code))}</span>`
+    ))
+    .replace(/\r?\n/g, "<br>");
 }
 
 function mimeFromPath(filePath, fallback = "application/octet-stream") {
@@ -276,7 +281,7 @@ async function resolveEntryMedia(model, archiveRoot, mediaResolver = defaultMedi
 }
 
 function plainDocumentText(value) {
-  return String(value || "").replace(/\[em\]e\d{1,8}\[\/em\]/gi, "〔QQ表情〕");
+  return String(value || "").replace(/\[em\]e(\d{1,8})\[\/em\]/gi, (_match, code) => qzoneEmotionLabel(code));
 }
 
 async function renderHtmlExport({ model, archiveRoot, mediaResolver, onMediaProgress }) {

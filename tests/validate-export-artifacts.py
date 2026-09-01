@@ -33,6 +33,7 @@ def validate_docx(path: Path) -> dict:
         numbering = package.read("word/numbering.xml").decode("utf-8")
         footer = package.read("word/footer1.xml").decode("utf-8")
         require("今天沿着河边" in document and "普通的一年" in document, "DOCX Chinese archive text is missing")
+        require("/捂脸" in document and "〔QQ表情〕" not in document, "DOCX QQ emotion label is missing")
         require("好友 1" in document and "阿程" not in document, "DOCX anonymization is incomplete")
         require("w:type=\"page\"" in footer or "PAGE" in footer, "DOCX page number field is missing")
         require("ArchiveBody" in styles and "Microsoft YaHei" in styles and "SimSun" in styles, "DOCX Chinese styles are incomplete")
@@ -53,6 +54,7 @@ def validate_pdf(path: Path, pngs: list[Path]) -> dict:
         require(2 <= len(pdf.pages) <= 8, f"Unexpected PDF page count: {len(pdf.pages)}")
         text = "\n".join(page.extract_text() or "" for page in pdf.pages)
         require("林屿的空间档案" in text and "今天沿着河边" in text, "PDF Chinese text is missing")
+        require("/捂脸" in text and "QQ表情" not in text, "PDF QQ emotion label is missing")
         require("好友 1" in text and "阿程" not in text, "PDF anonymization is incomplete")
         for index, page in enumerate(pdf.pages, start=1):
             require(abs(page.width - 595.28) < 3 and abs(page.height - 841.89) < 3, f"PDF page {index} is not A4")
@@ -79,6 +81,7 @@ def validate_html(path: Path) -> dict:
     require("data:image/png;base64," in html, "Offline HTML media is not embedded")
     require("<script" not in html.lower() and "javascript:" not in html.lower(), "Offline HTML contains an active script surface")
     require("好友 1" in html and "阿程" not in html, "HTML anonymization is incomplete")
+    require(">/捂脸</span>" in html and ">QQ表情</span>" not in html, "HTML QQ emotion label is missing")
     return {"bytes": path.stat().st_size}
 
 
