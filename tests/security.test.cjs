@@ -96,7 +96,7 @@ test("release configuration includes icon, portable archive, checksums and suppl
   const packageJson = JSON.parse(await fs.readFile(path.join(__dirname, "..", "package.json"), "utf8"));
   const workflow = await fs.readFile(path.join(__dirname, "..", ".github", "workflows", "release.yml"), "utf8");
   const icon = await fs.readFile(path.join(__dirname, "..", "build", "icon.png"));
-  assert.equal(packageJson.version, "0.6.0-alpha");
+  assert.equal(packageJson.version, "0.6.1-alpha");
   assert.equal(packageJson.build.win.icon, "build/icon.png");
   assert.equal(icon.subarray(1, 4).toString("ascii"), "PNG");
   for (const required of ["release:portable", "release:metadata", "SHA256SUMS.txt", "SBOM.cdx.json", "THIRD_PARTY_LICENSES.json", "WINDOWS_CSC_LINK"]) {

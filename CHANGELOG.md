@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.6.1-alpha] - 2026-09-02
+
+### 档案详情与发布流水线修复
+
+- 修复慢速渲染或页面滚动复位时，档案详情卡片可能沿用旧位置计算高度并超出窗口底部的问题；进入档案后的短暂稳定期会重新校准可用高度。
+- 桌面回归测试支持指定窗口尺寸，并在 GitHub CI 中使用真实可见窗口、等待缩放和详情布局稳定后再断言，避免隐藏窗口调度造成误报。
+- 本次不改变归档数据结构、QQ 采集逻辑或导出格式，与 `v0.6.0-alpha` 创建的本地档案兼容。
+
 ## [0.6.0-alpha] - 2026-09-01
 
 ### 桌面安全边界
@@ -245,6 +253,7 @@
 - QQ 非公开接口可能随服务端变化。
 - 安装包尚未进行代码签名。
 
+[0.6.1-alpha]: https://github.com/Socialist-Sister/qzone-journal/releases/tag/v0.6.1-alpha
 [0.6.0-alpha]: https://github.com/Socialist-Sister/qzone-journal/releases/tag/v0.6.0-alpha
 [0.5.0-alpha]: https://github.com/Socialist-Sister/qzone-journal/releases/tag/v0.5.0-alpha
 [0.4.1-alpha]: https://github.com/Socialist-Sister/qzone-journal/releases/tag/v0.4.1-alpha
