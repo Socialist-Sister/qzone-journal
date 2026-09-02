@@ -294,7 +294,10 @@ async function run() {
   const directoryFlow = await window.webContents.executeJavaScript(`(async () => {
     const findButton = (label) => [...document.querySelectorAll("button")].find((button) => button.textContent.trim() === label);
     findButton("设置")?.click();
-    await new Promise((resolve) => setTimeout(resolve, 40));
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      if (document.body.innerText.includes("Documents") && document.body.innerText.includes("空间备份")) break;
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    }
     const checkboxRect = document.querySelector('.settings-list input[type="checkbox"]')?.getBoundingClientRect();
     const folderButton = document.querySelector('[aria-label="打开备份目录"]');
     const folderRect = folderButton?.getBoundingClientRect();
@@ -302,7 +305,10 @@ async function run() {
     folderButton?.click();
     await new Promise((resolve) => setTimeout(resolve, 20));
     findButton("更改位置")?.click();
-    await new Promise((resolve) => setTimeout(resolve, 30));
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      if (document.body.innerText.includes("QQ空间档案")) break;
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    }
     const result = {
       showsDefaultDirectory,
       controlsAligned: Math.abs((checkboxRect.left + checkboxRect.width / 2) - (folderRect.left + folderRect.width / 2)) <= 1,
