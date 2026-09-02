@@ -22,7 +22,7 @@
     "build": "vite build && node scripts/prepare-sites-build.mjs",
     "build:web": "vite build",
     "desktop:pack": "pnpm run build:web && electron-builder --dir",
-    "desktop:dist": "pnpm run build:web && electron-builder --win nsis",
+    "desktop:dist": "pnpm run build:web && electron-builder --win nsis --publish never",
     "release:portable": "node scripts/prepare-portable.mjs",
     "release:metadata": "node scripts/generate-release-metadata.mjs",
     "preview": "vite preview",

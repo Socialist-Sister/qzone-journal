@@ -98,6 +98,7 @@ test("release configuration includes icon, portable archive, checksums and suppl
   const icon = await fs.readFile(path.join(__dirname, "..", "build", "icon.png"));
   assert.equal(packageJson.version, "0.6.1-alpha");
   assert.equal(packageJson.build.win.icon, "build/icon.png");
+  assert.match(packageJson.scripts["desktop:dist"], /--publish\s+never/);
   assert.equal(icon.subarray(1, 4).toString("ascii"), "PNG");
   for (const required of ["release:portable", "release:metadata", "SHA256SUMS.txt", "SBOM.cdx.json", "THIRD_PARTY_LICENSES.json", "WINDOWS_CSC_LINK"]) {
     assert.match(workflow, new RegExp(required.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
