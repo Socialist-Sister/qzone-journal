@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain, nativeImage, safeStorage, shell, utilityProcess } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain, nativeImage, net, safeStorage, shell, utilityProcess } = require("electron");
 const fs = require("node:fs/promises");
 const path = require("node:path");
 const { createHash, randomUUID } = require("node:crypto");
@@ -1137,6 +1137,7 @@ ipcMain.handle("desktop:app:info", () => ({
 }));
 
 ipcMain.handle("desktop:app:check-for-updates", async () => checkForUpdates(app.getVersion(), {
+  fetchImpl: net.fetch,
   signal: AbortSignal.timeout(15000),
 }));
 

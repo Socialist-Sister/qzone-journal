@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.6.2-alpha] - 2026-09-02
+
+### 更新检查兼容修复
+
+- “检查新版本”精简为“检查更新”。
+- 更新检查改用 Electron/Chromium 网络栈，自动沿用系统代理、证书与网络设置，修复浏览器可联网但应用提示 `TypeError: fetch failed` 的问题。
+- GitHub API 不可用时会回退到受限的官方 Release Atom 源；两条通道均失败时显示可操作的中文提示，不再直接暴露底层异常。
+- Release 下载地址收紧为本项目的 GitHub 标签页面，并新增主通道、回退通道、失败提示和外链边界回归。
+
 ## [0.6.1-alpha] - 2026-09-02
 
 ### 档案详情与发布流水线修复
@@ -253,6 +262,7 @@
 - QQ 非公开接口可能随服务端变化。
 - 安装包尚未进行代码签名。
 
+[0.6.2-alpha]: https://github.com/Socialist-Sister/qzone-journal/releases/tag/v0.6.2-alpha
 [0.6.1-alpha]: https://github.com/Socialist-Sister/qzone-journal/releases/tag/v0.6.1-alpha
 [0.6.0-alpha]: https://github.com/Socialist-Sister/qzone-journal/releases/tag/v0.6.0-alpha
 [0.5.0-alpha]: https://github.com/Socialist-Sister/qzone-journal/releases/tag/v0.5.0-alpha

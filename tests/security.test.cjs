@@ -6,7 +6,7 @@ const fs = require("node:fs/promises");
 const { pathToFileURL } = require("node:url");
 const { isSafeExternalUrl, isTrustedAppUrl } = require("../desktop/security.cjs");
 const { assertMinimumFreeSpace } = require("../desktop/storage-safety.cjs");
-const { checkForUpdates, compareVersions, parseVersion } = require("../desktop/update.cjs");
+const { RELEASES_API, RELEASES_ATOM, checkForUpdates, compareVersions, parseVersion, validReleaseUrl } = require("../desktop/update.cjs");
 const { MAX_MEDIA_BYTES, downloadMedia, fetchAllowedMedia, readLimitedResponseBody } = require("../desktop/collector/qzone-adapter.cjs");
 const { normalizeMediaUrl } = require("../desktop/collector/qzone-parser.cjs");
 const { ArchiveStore } = require("../desktop/archive/store.cjs");
@@ -45,6 +45,35 @@ test("update checks accept only bounded GitHub release metadata", async () => {
   });
   assert.equal(result.updateAvailable, true);
   assert.equal(result.checksumsAvailable, true);
+});
+
+test("update checks fall back to the bounded GitHub release feed", async () => {
+  const requested = [];
+  const result = await checkForUpdates("0.6.1-alpha", {
+    fetchImpl: async (url) => {
+      requested.push(url);
+      if (url === RELEASES_API) throw new TypeError("fetch failed");
+      assert.equal(url, RELEASES_ATOM);
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers(),
+        text: async () => '<feed><entry><link rel="alternate" href="https://github.com/Socialist-Sister/qzone-journal/releases/tag/v0.6.2-alpha" /></entry></feed>',
+      };
+    },
+  });
+  assert.deepEqual(requested, [RELEASES_API, RELEASES_ATOM]);
+  assert.equal(result.updateAvailable, true);
+  assert.equal(result.latestVersion, "0.6.2-alpha");
+  assert.equal(result.checksumsAvailable, false);
+});
+
+test("update checks return an actionable error after both GitHub routes fail", async () => {
+  await assert.rejects(() => checkForUpdates("0.6.1-alpha", {
+    fetchImpl: async () => { throw new TypeError("fetch failed"); },
+  }), /无法连接 GitHub 检查更新/);
+  assert.equal(validReleaseUrl("https://github.com/Socialist-Sister/qzone-journal/releases/tag/v0.6.2-alpha"), "https://github.com/Socialist-Sister/qzone-journal/releases/tag/v0.6.2-alpha");
+  assert.equal(validReleaseUrl("https://github.com/other/repo/releases/tag/v0.6.2-alpha"), "");
 });
 
 test("media response is rejected before allocation when declared size is excessive", async () => {
@@ -96,7 +125,7 @@ test("release configuration includes icon, portable archive, checksums and suppl
   const packageJson = JSON.parse(await fs.readFile(path.join(__dirname, "..", "package.json"), "utf8"));
   const workflow = await fs.readFile(path.join(__dirname, "..", ".github", "workflows", "release.yml"), "utf8");
   const icon = await fs.readFile(path.join(__dirname, "..", "build", "icon.png"));
-  assert.equal(packageJson.version, "0.6.1-alpha");
+  assert.equal(packageJson.version, "0.6.2-alpha");
   assert.equal(packageJson.build.win.icon, "build/icon.png");
   assert.match(packageJson.scripts["desktop:dist"], /--publish\s+never/);
   assert.equal(icon.subarray(1, 4).toString("ascii"), "PNG");

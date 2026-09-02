@@ -1420,7 +1420,7 @@ function SettingsView({ section, onSectionChange, aiConfig, onAiConfigChange, ar
   const [anonymous, setAnonymous] = useState(readExportAnonymizePreference);
   const [notice, setNotice] = useState("");
   const [backupDirectory, setBackupDirectory] = useState("文档/空间备份");
-  const [appVersion, setAppVersion] = useState("0.6.1-alpha");
+  const [appVersion, setAppVersion] = useState("0.6.2-alpha");
   const [checkingUpdates, setCheckingUpdates] = useState(false);
   const [updateResult, setUpdateResult] = useState(null);
   const [providerEditor, setProviderEditor] = useState(null);
@@ -1832,7 +1832,7 @@ function SettingsView({ section, onSectionChange, aiConfig, onAiConfigChange, ar
                     <small>当前版本：{appVersion}</small>
                   </div>
                   <div className="about-update-actions">
-                    <button className="outline-action" type="button" onClick={checkUpdates} disabled={checkingUpdates}>{checkingUpdates ? <><LoadingSpinner size={15} />正在检查…</> : "检查新版本"}</button>
+                    <button className="outline-action" type="button" onClick={checkUpdates} disabled={checkingUpdates}>{checkingUpdates ? <><LoadingSpinner size={15} />正在检查…</> : "检查更新"}</button>
                     {updateResult?.updateAvailable && <button className="text-action" type="button" onClick={openLatestRelease}>下载 {updateResult.latestVersion}</button>}
                   </div>
                 </div>

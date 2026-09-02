@@ -166,8 +166,8 @@ async function run() {
     return { repaired: true, quarantinedEntries: 0, mediaMarkedForRedownload: 0 };
   });
   ipcMain.handle("desktop:qzone:cancel-collection", () => ({ cancelled: true }));
-  ipcMain.handle("desktop:app:info", () => ({ name: "空间备份", version: "0.6.1-alpha", platform: process.platform, packaged: false }));
-  ipcMain.handle("desktop:app:check-for-updates", () => ({ checked: true, updateAvailable: false, currentVersion: "0.6.1-alpha", latestVersion: "0.6.1-alpha" }));
+  ipcMain.handle("desktop:app:info", () => ({ name: "空间备份", version: "0.6.2-alpha", platform: process.platform, packaged: false }));
+  ipcMain.handle("desktop:app:check-for-updates", () => ({ checked: true, updateAvailable: false, currentVersion: "0.6.2-alpha", latestVersion: "0.6.2-alpha" }));
   const window = new BrowserWindow({
     width: Number(process.env.QZONE_TEST_WIDTH) || 1120,
     height: Number(process.env.QZONE_TEST_HEIGHT) || 720,
@@ -351,11 +351,11 @@ async function run() {
     await new Promise((resolve) => setTimeout(resolve, 30));
     findButton("关于")?.click();
     await new Promise((resolve) => setTimeout(resolve, 30));
-    findButton("检查新版本")?.click();
+    findButton("检查更新")?.click();
     await new Promise((resolve) => setTimeout(resolve, 40));
     const result = {
-      showsCurrentVersion: document.body.innerText.includes("当前版本：0.6.1-alpha"),
-      checksUpdatesInApp: Boolean(findButton("检查新版本")) && document.body.innerText.includes("GitHub 上最新的公开版本"),
+      showsCurrentVersion: document.body.innerText.includes("当前版本：0.6.2-alpha"),
+      checksUpdatesInApp: Boolean(findButton("检查更新")) && document.body.innerText.includes("GitHub 上最新的公开版本"),
       explainsTemporarySession: document.body.innerText.includes("采集结束后自动清除临时会话"),
       readableSmallText: parseFloat(getComputedStyle(document.querySelector(".about-product-copy small")).fontSize) >= 11,
     };
