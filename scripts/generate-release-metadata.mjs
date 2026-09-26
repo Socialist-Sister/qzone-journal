@@ -2,6 +2,8 @@ import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { createReadStream } from "node:fs";
+import { selectReleaseAssets } from "./release-assets.mjs";
 import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
@@ -34,15 +36,13 @@ const sbom = {
 await writeFile(path.join(releaseDirectory, "SBOM.cdx.json"), `${JSON.stringify(sbom, null, 2)}\n`);
 await writeFile(path.join(releaseDirectory, "THIRD_PARTY_LICENSES.json"), `${JSON.stringify({ generatedAt: new Date().toISOString(), packages: components.map(({ name, version, licenses, externalReferences }) => ({ name, version, license: licenses[0].expression, homepage: externalReferences?.[0]?.url || "" })) }, null, 2)}\n`);
 
-const candidates = (await readdir(releaseDirectory)).filter((name) => (
-  /\.(?:exe|zip|blockmap)$/i.test(name)
-  || name === "latest.yml"
-  || name === "SBOM.cdx.json"
-  || name === "THIRD_PARTY_LICENSES.json"
-)).sort();
+const latestMetadata = await readFile(path.join(releaseDirectory, "latest.yml"), "utf8").catch(() => "");
+const candidates = selectReleaseAssets(await readdir(releaseDirectory), packageJson.version, latestMetadata);
 const sums = [];
 for (const name of candidates) {
-  const digest = createHash("sha256").update(await readFile(path.join(releaseDirectory, name))).digest("hex");
+  const hash = createHash("sha256");
+  for await (const chunk of createReadStream(path.join(releaseDirectory, name))) hash.update(chunk);
+  const digest = hash.digest("hex");
   sums.push(`${digest} *${name}`);
 }
 await writeFile(path.join(releaseDirectory, "SHA256SUMS.txt"), `${sums.join("\n")}\n`);

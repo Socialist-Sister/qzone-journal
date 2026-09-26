@@ -71,7 +71,7 @@ test("mood category parser normalizes own text, pictures, forwards, comments and
   assert.equal(page.entries[0].comments[1].isReply, true);
   assert.equal(page.entries[0].likes[0].name, "小周");
   assert.equal(page.entries[0].metrics.likeCount, 3);
-  assert.equal(page.entries[0].sourceMeta.parserVersion, 7);
+  assert.equal(page.entries[0].sourceMeta.parserVersion, 10);
   assert.equal(page.total, 3);
   assert.equal(page.cursor, "2");
   assert.equal(page.hasMore, true);
@@ -86,6 +86,51 @@ test("QQ mention tokens keep only nicknames and never expose internal UIN fields
     normalizeQzoneMentions("@{who:1,nick:昵称,带逗号,uin:42,auto:1} @{uin:7,who:1}"),
     "@昵称,带逗号 @QQ好友",
   );
+  assert.equal(
+    normalizeQzoneMentions("@{uin:7,nick:阿程,who:1,auto:1}回复正文"),
+    "@阿程 回复正文",
+  );
+});
+
+test("mood category parser keeps native QQ videos and does not duplicate their covers as pictures", () => {
+  const payload = `_preloadCallback(${JSON.stringify({
+    code: 0,
+    total: 2,
+    msglist: [{
+      tid: "native-video-only",
+      uin: 12345678,
+      content: "",
+      created_time: 1700000000,
+      video: [{
+        video_id: "1074_video_only",
+        pic_url: "http://photogzmaz.photo.store.qq.com/video-cover.jpg",
+        url1: "https://photogzmaz.photo.store.qq.com/video-thumb.jpg",
+        url3: "https://photovideo.photo.qq.com/native-video.mp4",
+        duration: 12500,
+        width: 1920,
+        height: 1080,
+      }],
+      pic: [{ url1: "https://photogzmaz.photo.store.qq.com/video-cover.jpg" }],
+    }, {
+      tid: "native-video-mixed",
+      uin: 12345678,
+      content: "图片和视频",
+      created_time: 1699999999,
+      pic: [{ url1: "https://photogz.photo.store.qq.com/photo.jpg" }, {
+        url1: "https://photogz.photo.store.qq.com/mixed-cover.jpg",
+        video_info: { video_id: "1074_mixed", url3: "https://photovideo.photo.qq.com/mixed.mp4", duration: 8000 },
+      }],
+    }],
+  })});`;
+  const page = parseMoodListPage(payload, "12345678", { offset: 0, count: 20 });
+  assert.equal(page.entries.length, 2);
+  assert.equal(page.entries[0].media.length, 1);
+  assert.equal(page.entries[0].media[0].kind, "video");
+  assert.equal(page.entries[0].media[0].sourceUrl, "https://photovideo.photo.qq.com/native-video.mp4");
+  assert.equal(page.entries[0].media[0].posterSourceUrl, "https://photogzmaz.photo.store.qq.com/video-cover.jpg");
+  assert.equal(page.entries[0].media[0].durationMs, 12500);
+  assert.deepEqual(page.entries[1].media.map((media) => media.kind), ["image", "video"]);
+  assert.equal(page.entries[1].media[1].posterSourceUrl, "https://photogz.photo.store.qq.com/mixed-cover.jpg");
 });
 
 test("mood category parser rejects another publisher and identifies rate limiting", () => {
@@ -209,7 +254,7 @@ test("feeds3 parser removes escaped template whitespace and excludes non-status 
   const page = parseFeeds3Page(payload, "12345678");
   assert.equal(page.entries.length, 1);
   assert.equal(page.entries[0].text, "真正的正文\n第二行");
-  assert.equal(page.entries[0].sourceMeta.parserVersion, 7);
+  assert.equal(page.entries[0].sourceMeta.parserVersion, 10);
   assert.match(page.cursor, /pagenum=2/);
   assert.equal(page.eligibleCount, 1);
 });
@@ -332,4 +377,77 @@ test("a first-page -10001 remains an immediate authentication failure", async ()
     delay: async () => assert.fail("first-page auth failures must not be delayed"),
   }), /重新扫码登录/);
   assert.equal(calls, 1);
+});
+
+
+test("video thumbnail aliases are excluded and duplicate video fields preserve the playable source", () => {
+  const page = parseMoodListPage(JSON.stringify({ code: 0, msglist: [{ tid: "aliases", uin: "12345678", created_time: 1700000000,
+    video: [{ video_id: "vid", pic_url: "https://qpic.cn/cover.jpg", url1: "https://qpic.cn/thumb.jpg" },
+      { video_id: "vid", url3: "https://photovideo.photo.qq.com/video.mp4" }],
+    pic: [{ url1: "https://qpic.cn/thumb.jpg" }, { url1: "https://qpic.cn/normal.jpg" }],
+  }] }), "12345678");
+  assert.equal(page.entries[0].media.length, 2);
+  const video = page.entries[0].media.find((item) => item.kind === "video");
+  assert.equal(video.sourceUrl, "https://photovideo.photo.qq.com/video.mp4");
+  assert.equal(video.posterSourceUrl, "https://qpic.cn/cover.jpg");
+});
+
+test("an external video card never becomes a native QQ video from its cached thumbnail", () => {
+  const html = `<div id="feed_12345678_311_0_1700000000_0_1"><div class="f-info">分享的视频</div><i name="feed_data" data-tid="external" data-uin="12345678" data-abstime="1700000000"></i><a class="video-card" href="https://b23.tv/example"><img src="https://qpic.cn/external-thumbnail.jpg"></a></div>`;
+  const page = parseFeeds3Page(JSON.stringify({ code: 0, data: { main: {}, data: [{ html }] } }), "12345678");
+  assert.equal(page.entries.length, 1);
+  assert.equal(page.entries[0].media.length, 0);
+  assert.ok(page.entries[0].links.some((link) => link.url === "https://b23.tv/example"));
+});
+
+
+test("later like-list rejection preserves names already obtained without retrying the boundary", async () => {
+  let requests = 0;
+  const result = await fetchLikeList({ uin: "12345678", tid: "partial-likes", gTk: 1 }, {
+    fetch: async (url) => {
+      requests += 1;
+      return { ok: true, status: 200, url, headers: new Headers(), text: async () => JSON.stringify(requests === 1
+        ? { code: 0, data: { total_number: 2, has_more: 1, like_uin_info: [{ fuin: 90001, nick: "已取得名字" }] } }
+        : { code: -10000 }) };
+    }, delay: async () => undefined,
+  });
+  assert.equal(requests, 2);
+  assert.equal(result.partial, true);
+  assert.equal(result.partialCode, "QZONE_INTERACTION_RATE_LIMITED");
+  assert.deepEqual(result.likes.map(person => person.name), ["已取得名字"]);
+});
+
+
+test("mixed QQ media retains video slots 4, 6 and 7 regardless of video array order", () => {
+  const { mixedMediaPayload } = require("./fixtures/mixed-media.cjs");
+  for (const legacy of [false, true]) {
+    const media = parseMoodListPage(JSON.stringify(mixedMediaPayload({ legacy })), "12345678").entries[0].media;
+    assert.deepEqual(media.map((item, index) => item.kind === "video" ? index + 1 : null).filter(Boolean), [4, 6, 7]);
+    assert.equal(media.length, 9);
+    assert.deepEqual(media.filter(item => item.kind === "video").map(item => item.videoId), ["video-4", "video-6", "video-7"]);
+    assert.ok(media.filter(item => item.kind === "video").every(item => item.sourceUrl.endsWith(".mp4")));
+  }
+});
+
+test("forwarded mixed media follows each source container and keeps unpositioned videos", () => {
+  const { mixedMediaPayload } = require("./fixtures/mixed-media.cjs");
+  const original = mixedMediaPayload().msglist[0];
+  const payload = { code: 0, msglist: [{ tid: "forward", uin: "12345678", pic: [{ url1: "https://qpic.cn/own.jpg" }], rt_con: original }] };
+  const media = parseMoodListPage(JSON.stringify(payload), "12345678").entries[0].media;
+  assert.equal(media[0].sourceUrl, "https://qpic.cn/own.jpg");
+  assert.deepEqual(media.map((item, index) => item.kind === "video" ? index + 1 : null).filter(Boolean), [5, 7, 8]);
+  delete original.pic;
+  const videoOnly = parseMoodListPage(JSON.stringify(payload), "12345678").entries[0].media;
+  assert.deepEqual(videoOnly.map(item => item.kind), ["image", "video", "video", "video"]);
+});
+
+test("feeds3 mixed media keeps HTML order and excludes nested thumbnails", () => {
+  for (const originals of [true, false]) {
+    const photo = (id) => originals ? `<a data-pickey="id,https://qpic.cn/${id}.jpg"><img src="https://qpic.cn/${id}-thumb.jpg"></a>` : `<img src="https://qpic.cn/${id}.jpg">`;
+    const html = `<div id="feed_12345678_311_0_1700000000_0_1"><i name="feed_data" data-tid="mixed-html" data-uin="12345678" data-abstime="1700000000"></i>${photo("first")}<div class="video-card" data-video-url="https://photovideo.photo.qq.com/clip.mp4"><img src="https://qpic.cn/cover.jpg"></div>${photo("last")}</div>`;
+    const media = parseFeeds3Page(JSON.stringify({ code: 0, data: { main: {}, data: [{ html }] } }), "12345678").entries[0].media;
+    assert.deepEqual(media.map(item => item.kind), ["image", "video", "image"]);
+    assert.equal(media[0].sourceUrl, "https://qpic.cn/first.jpg");
+    assert.equal(media[2].sourceUrl, "https://qpic.cn/last.jpg");
+  }
 });

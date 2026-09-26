@@ -36,9 +36,15 @@ function isSafeExternalUrl(value) {
   return Boolean(parsed && parsed.protocol === "https:" && parsed.hostname && !parsed.hostname.endsWith("."));
 }
 
-function restrictSessionPermissions(targetSession) {
-  targetSession.setPermissionCheckHandler(() => false);
-  targetSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
+function restrictSessionPermissions(targetSession, { fullscreenWebContents, trustedAppUrl = () => false } = {}) {
+  const allow = (webContents, permission, details) => Boolean(
+    permission === "fullscreen"
+    && webContents && webContents === fullscreenWebContents && !webContents.isDestroyed()
+    && details?.isMainFrame === true
+    && trustedAppUrl(webContents.getURL()) && trustedAppUrl(details.requestingUrl),
+  );
+  targetSession.setPermissionCheckHandler((webContents, permission, _origin, details) => allow(webContents, permission, details));
+  targetSession.setPermissionRequestHandler((webContents, permission, callback, details) => callback(allow(webContents, permission, details)));
 }
 
 module.exports = { isPathInside, isSafeExternalUrl, isTrustedAppUrl, parseUrl, restrictSessionPermissions };

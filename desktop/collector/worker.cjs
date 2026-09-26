@@ -1,5 +1,5 @@
 const { ArchiveStore } = require("../archive/store.cjs");
-const { MOOD_PAGE_SIZE, abortableDelay, createCollectionPlan, downloadMedia, fetchLikeList, fetchMoodPage, probeSession } = require("./qzone-adapter.cjs");
+const { MOOD_PAGE_SIZE, abortableDelay, createCollectionPlan, downloadMedia, readLimitedResponseBody, fetchLikeList, fetchMoodPage, probeSession } = require("./qzone-adapter.cjs");
 const { isAuthenticationFailure } = require("./qzone-parser.cjs");
 
 const parentPort = process.parentPort;
@@ -22,14 +22,18 @@ function throwIfCancelled() {
 async function mapWithConcurrency(items, limit, mapper) {
   const results = new Array(items.length);
   let nextIndex = 0;
+  let failed = false;
   const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
-    while (nextIndex < items.length) {
+    while (!failed && nextIndex < items.length) {
       const index = nextIndex;
       nextIndex += 1;
-      results[index] = await mapper(items[index], index);
+      try { results[index] = await mapper(items[index], index); }
+      catch (error) { failed = true; throw error; }
     }
   });
-  await Promise.all(workers);
+  const settled = await Promise.allSettled(workers);
+  const rejection = settled.find((result) => result.status === "rejected");
+  if (rejection) throw rejection.reason;
   return results;
 }
 
@@ -41,6 +45,9 @@ async function run(job) {
   let counts = { entries: 0, media: 0, mediaBytes: 0, comments: 0, likes: 0 };
   const mediaFailures = [];
   const pageDiagnostics = [];
+  const mediaRequests = new Map();
+  let downloadedBytes = 0;
+  let lastMediaProgress = 0;
   let activeCursors = {};
   let parserMigration = null;
   const changes = { added: 0, updated: 0, skipped: 0 };
@@ -64,7 +71,8 @@ async function run(job) {
     let resumeAdapter = canResume ? previousAdapter : "mood_list";
     const lastFullScanAt = Date.parse(String(initialization.manifest.collection?.lastFullScanAt || ""));
     const fullScanDue = !Number.isFinite(lastFullScanAt) || Date.now() - lastFullScanAt >= 30 * 24 * 60 * 60 * 1000;
-    incrementalMode = counts.entries > 0 && !canResume && !initialization.migrationRequired && !fullScanDue;
+    const mediaRepairDue = job.options.includeMedia && await store.hasPendingMedia();
+    incrementalMode = counts.entries > 0 && !canResume && !initialization.migrationRequired && !fullScanDue && !mediaRepairDue;
     activeCursors = { posts: resumeCursor, postAdapter: resumeAdapter, likes: 0 };
     throwIfCancelled();
     await store.writeCheckpoint({ jobId: job.jobId, phase: "session_check", cursors: activeCursors, counts });
@@ -189,29 +197,82 @@ async function run(job) {
             ...inspection.entry,
             media: [],
           };
-          const existingMedia = new Map((inspection.existing?.media || []).map((media) => [String(media.sourceUrl || ""), media]));
+          const mediaKey = (media) => `${media?.kind === "video" ? "video" : "image"}:${String(media?.sourceUrl || media?.posterSourceUrl || "")}`;
+          const existingMedia = new Map((inspection.existing?.media || []).map((media) => [mediaKey(media), media]));
           entry.media = await mapWithConcurrency(inspection.entry.media || [], 3, async (media) => {
-            const preserved = existingMedia.get(String(media.sourceUrl || ""));
+            const preserved = existingMedia.get(mediaKey(media));
             if (!job.options.includeMedia) return preserved || media;
             if (job.testMode) return media;
-            try {
-              if (preserved?.localPath) {
-                const verified = await store.getStoredMedia(media.sourceUrl);
-                if (verified) return { ...preserved, localPath: verified.relativePath, contentType: verified.contentType, size: verified.size };
+            const nextMedia = { ...media };
+            const saveRemoteMedia = async (sourceUrl, kind, fields) => {
+              if (!sourceUrl) return;
+              try {
+                let stored = await store.getStoredMedia(sourceUrl);
+                if (!stored) {
+                  const requestKey = `${kind}:${sourceUrl}`;
+                  if (!mediaRequests.has(requestKey)) {
+                    const request = downloadMedia({ sourceUrl, uin: job.ownerUin, signal: activeAbortController.signal, kind }, {
+                      consumeResponse: (response, metadata) => store.writeMediaStream({ sourceUrl, ...metadata },
+                        (writeChunk) => readLimitedResponseBody(response, metadata.maximumBytes, metadata.label, async (chunk) => {
+                          throwIfCancelled();
+                          await writeChunk(chunk);
+                          downloadedBytes += chunk.length;
+                          if (Date.now() - lastMediaProgress > 700) {
+                            lastMediaProgress = Date.now();
+                            emit("progress", { jobId: job.jobId, phase: "downloading_media",
+                              progress: Math.min(91, 30 + Math.round(60 * processedEntries / Math.max(1, Number(page.total) || processedEntries + 20))),
+                              message: `正在保存${kind === "video" ? "视频" : "图片"}，本轮已下载 ${(downloadedBytes / 1024 / 1024).toFixed(1)} MB…`, changes });
+                          }
+                        })),
+                    }).finally(() => mediaRequests.delete(requestKey));
+                    mediaRequests.set(requestKey, request);
+                  }
+                  stored = await mediaRequests.get(requestKey);
+                }
+                nextMedia[fields.path] = stored.relativePath;
+                nextMedia[fields.type] = stored.contentType;
+                nextMedia[fields.size] = stored.size;
+              } catch (error) {
+                if (activeAbortController.signal.aborted) throw error;
+                if (error?.code === "ENOSPC") {
+                  const diskError = new Error("保存位置空间不足，已安全停止并保留恢复点");
+                  diskError.code = "QZONE_DISK_SPACE_LOW";
+                  throw diskError;
+                }
+                if (mediaFailures.length < 100) mediaFailures.push({ kind, reason: error?.name === "TimeoutError" ? "timeout" : "download_failed", httpStatus: Number(String(error?.message || "").match(/HTTP (\d{3})/)?.[1]) || null });
+                nextMedia[fields.error] = String(error?.message || error).slice(0, 300);
               }
-              const indexedMedia = await store.getStoredMedia(media.sourceUrl);
-              const stored = indexedMedia || await downloadMedia({ sourceUrl: media.sourceUrl, uin: job.ownerUin, signal: activeAbortController.signal })
-                .then((downloaded) => store.writeMedia({ sourceUrl: media.sourceUrl, ...downloaded }));
-              return { ...media, localPath: stored.relativePath, contentType: stored.contentType, size: stored.size };
+            };
+            try {
+              if (preserved?.localPath && media.sourceUrl) {
+                const verified = await store.getStoredMedia(media.sourceUrl);
+                if (verified) Object.assign(nextMedia, { localPath: verified.relativePath, contentType: verified.contentType, size: verified.size });
+              }
+              if (!nextMedia.localPath && media.sourceUrl) {
+                await saveRemoteMedia(media.sourceUrl, media.kind === "video" ? "video" : "image", {
+                  path: "localPath", type: "contentType", size: "size", error: "downloadError",
+                });
+              }
+              if (media.kind === "video" && media.posterSourceUrl) {
+                if (preserved?.posterLocalPath) {
+                  const verifiedPoster = await store.getStoredMedia(media.posterSourceUrl);
+                  if (verifiedPoster) Object.assign(nextMedia, { posterLocalPath: verifiedPoster.relativePath, posterContentType: verifiedPoster.contentType, posterSize: verifiedPoster.size });
+                }
+                if (!nextMedia.posterLocalPath) {
+                  await saveRemoteMedia(media.posterSourceUrl, "image", {
+                    path: "posterLocalPath", type: "posterContentType", size: "posterSize", error: "posterDownloadError",
+                  });
+                }
+              }
+              return nextMedia;
             } catch (error) {
               if (activeAbortController.signal.aborted) throw error;
-              if (error?.code === "ENOSPC") {
+              if (["ENOSPC", "QZONE_DISK_SPACE_LOW"].includes(error?.code)) {
                 const diskError = new Error("保存位置空间不足，已安全停止并保留恢复点");
                 diskError.code = "QZONE_DISK_SPACE_LOW";
                 throw diskError;
               }
-              if (mediaFailures.length < 100) mediaFailures.push({ sourceUrl: media.sourceUrl, error: String(error?.message || error).slice(0, 300) });
-              return { ...media, downloadError: String(error?.message || error).slice(0, 300) };
+              return { ...nextMedia, downloadError: String(error?.message || error).slice(0, 300) };
             }
           });
           await store.writeEntry(entry);
@@ -323,6 +384,13 @@ async function run(job) {
             name: String(person?.name || person?.nickname || "QQ 用户"),
             source: String(person?.source || "qzone_like_list"),
           }));
+          if (result.partial) {
+            const knownNames = new Set(nextLikes.map((person) => person.name));
+            for (const person of currentLikes) {
+              const name = String(person?.name || person?.nickname || person || "QQ 用户");
+              if (!knownNames.has(name) && nextLikes.length < 3000) { nextLikes.push({ name, source: "previous_archive" }); knownNames.add(name); }
+            }
+          }
           const nextTotal = Math.max(nextLikes.length, currentTotal, Number(result.total) || 0);
           const now = new Date().toISOString();
           const updatedEntry = {
@@ -332,7 +400,7 @@ async function run(job) {
             sourceMeta: {
               ...(storedEntry.sourceMeta || {}),
               likeDetailsFetchedAt: now,
-              likeDetailsStatus: nextLikes.length ? "complete" : "empty",
+              likeDetailsStatus: result.partial ? "partial" : nextLikes.length ? "complete" : "empty",
             },
           };
           const beforeNames = currentLikes.map((person) => String(person?.name || person?.nickname || person || "")).join("\n");
@@ -356,6 +424,11 @@ async function run(job) {
             changes,
           });
           await store.writeCheckpoint({ jobId: job.jobId, phase: "collecting_likes", cursors: activeCursors, counts });
+          if (result.partial) {
+            interactionTruncated = { code: result.partialCode, processed: inspectedLikes, reason: "incomplete" };
+            await store.writeDiagnostic("like-enrichment-partial", { parserCode: result.partialCode, processedEntries: inspectedLikes });
+            break;
+          }
           if (!embeddedComplete && !job.testMode) {
             await abortableDelay(1600 + Math.floor(Math.random() * 700), activeAbortController.signal);
           }
@@ -411,6 +484,7 @@ async function run(job) {
     const cancelled = activeAbortController?.signal.aborted;
     try {
       await store.flushIndexes();
+      counts = await store.summarize();
       if (parserMigration) {
         const restored = await store.rollbackParserMigration(parserMigration, {
           reason: cancelled ? "collection_cancelled" : "collection_failed",

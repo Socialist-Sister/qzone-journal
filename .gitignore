@@ -13,3 +13,6 @@ design-reference-normalized.png
 review-titlebar-crop.png
 AGENTS.md
 *.log
+
+# Local review screenshots and test logs (reproducible from the test harness)
+artifacts/review-*/

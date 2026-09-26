@@ -209,7 +209,7 @@ async function ensureAccountRegistry() {
 
 async function saveAccountRegistry() {
   const snapshot = JSON.stringify(accountRegistry, null, 2);
-  registryWrite = registryWrite.then(async () => {
+  registryWrite = registryWrite.catch(() => undefined).then(async () => {
     const target = accountsPath();
     const temporary = `${target}.${randomUUID()}.tmp`;
     await fs.mkdir(path.dirname(target), { recursive: true });
@@ -321,6 +321,7 @@ async function updateAccountFromStatus(account, status, { makeActive = false } =
   const stored = registry.accounts.find((item) => item.id === account.id);
   if (!stored) registry.accounts.push(account);
   const target = registry.accounts.find((item) => item.id === account.id);
+  const before = JSON.stringify(target);
   const uin = normalizeUin(status?.uin);
   const nickname = normalizeNickname(status?.nickname);
   if (uin) target.uin = uin;
@@ -331,7 +332,7 @@ async function updateAccountFromStatus(account, status, { makeActive = false } =
     registry.activeAccountId = account.id;
     target.lastUsedAt = new Date().toISOString();
   }
-  await saveAccountRegistry();
+  if (!stored || makeActive || before !== JSON.stringify(target)) await saveAccountRegistry();
 }
 
 async function updateQzoneAccountProfile(accountId, profile = {}) {

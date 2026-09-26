@@ -55,7 +55,7 @@ function safeHttpsLinks(links) {
   return (Array.isArray(links) ? links : []).flatMap((link) => {
     try {
       const parsed = new URL(String(link?.url || ""));
-      if (parsed.protocol !== "https:") return [];
+      if (parsed.protocol !== "https:" || parsed.username || parsed.password) return [];
       const qqOwnedHost = parsed.hostname === "qq.com" || parsed.hostname.endsWith(".qq.com") || parsed.hostname.endsWith(".gtimg.cn");
       if (qqOwnedHost && /\/(?:u\/)?\d{5,12}(?:\/|$)/.test(parsed.pathname)) return [];
       for (const key of [...parsed.searchParams.keys()]) {
@@ -85,16 +85,18 @@ function exportDate(value) {
 function filterEntries(entries, options) {
   const keyword = options.scope === "filtered" ? options.query.toLocaleLowerCase("zh-CN") : "";
   const type = options.scope === "filtered" ? options.type : "all";
-  const from = options.scope === "dates" && options.dateFrom ? `${options.dateFrom}T00:00:00` : "";
-  const to = options.scope === "dates" && options.dateTo ? `${options.dateTo}T23:59:59.999` : "";
+  const from = options.scope === "dates" && options.dateFrom ? Date.parse(`${options.dateFrom}T00:00:00`) : null;
+  const to = options.scope === "dates" && options.dateTo ? Date.parse(`${options.dateTo}T23:59:59.999`) : null;
   return (Array.isArray(entries) ? entries : [])
     .filter((entry) => {
       if (type !== "all" && entry.type !== type) return false;
-      const createdAt = String(entry.createdAt || entry.date || "");
-      if (from && createdAt < from) return false;
-      if (to && createdAt > to) return false;
+      const createdAt = Date.parse(String(entry.createdAt || entry.date || ""));
+      if ((from !== null || to !== null) && !Number.isFinite(createdAt)) return false;
+      if (from !== null && createdAt < from) return false;
+      if (to !== null && createdAt > to) return false;
       if (!keyword) return true;
-      const haystack = [entry.title, entry.text, entry.location, ...safeHttpsLinks(entry.links).map((link) => link.label)]
+      const haystack = [entry.title, entry.text, entry.location, ...safeHttpsLinks(entry.links).map((link) => link.label),
+        ...(entry.comments || []).map((comment) => `${comment.authorName || comment.name || ""} ${comment.text || ""}`)]
         .map((value) => safeText(value, 200000))
         .join(" ")
         .toLocaleLowerCase("zh-CN");
@@ -178,6 +180,21 @@ function normalizeExportEntry(entry, options, ownerNickname) {
   const likes = options.includeLikes ? (Array.isArray(entry.likes) ? entry.likes : []).map((like) => (
     anonymizer.anonymizeName(like?.name || like?.nickname || like || "QQ 好友")
   )) : [];
+  const sourceMedia = Array.isArray(entry.media) ? entry.media : [];
+  const videoCount = sourceMedia.filter((media) => media?.kind === "video" || String(media?.contentType || "").startsWith("video/")).length;
+  const exportableMedia = sourceMedia.flatMap((media) => {
+    const isVideo = media?.kind === "video" || String(media?.contentType || "").startsWith("video/");
+    if (!isVideo) return [media];
+    if (!media?.posterLocalPath) return [];
+    return [{
+      kind: "image",
+      videoPoster: true,
+      localPath: media.posterLocalPath,
+      contentType: media.posterContentType || "image/jpeg",
+      width: media.width,
+      height: media.height,
+    }];
+  });
   return {
     id: safeText(entry.sourceId || entry.id, 200),
     type: EXPORT_TYPES.has(entry.type) && entry.type !== "all" ? entry.type : "post",
@@ -186,7 +203,8 @@ function normalizeExportEntry(entry, options, ownerNickname) {
     text: anonymizer.anonymizeText(entry.text),
     location: anonymizer.anonymizeText(entry.location),
     links: safeHttpsLinks(entry.links).map((link) => ({ ...link, label: anonymizer.anonymizeLabel(link.label) })),
-    media: Array.isArray(entry.media) ? entry.media : [],
+    media: exportableMedia,
+    videoCount,
     comments,
     likes,
     commentCount: Math.max(comments.length, Number(entry.metrics?.commentCount ?? entry.commentCount) || 0),
@@ -214,6 +232,7 @@ function buildExportModel({ entries, profileName, ownerNickname, exportedAt = ne
       comments: normalizedEntries.reduce((total, entry) => total + entry.comments.length, 0),
       likes: normalizedEntries.reduce((total, entry) => total + entry.likes.length, 0),
       media: sanitized.media === "omit" ? 0 : normalizedEntries.reduce((total, entry) => total + entry.media.length, 0),
+      videos: normalizedEntries.reduce((total, entry) => total + entry.videoCount, 0),
     },
     privacyNote: sanitized.anonymize
       ? "互动昵称与正文中的好友提及已匿名化；本人昵称与动态内容保持原样。"
@@ -270,7 +289,7 @@ async function resolveEntryMedia(model, archiveRoot, mediaResolver = defaultMedi
       } catch {
         item = null;
       }
-      if (item?.data?.length) entryMedia.push(item);
+      if (item?.data?.length) entryMedia.push({ ...item, videoPoster: Boolean(media.videoPoster) });
       completed += 1;
       onProgress({ completed, total });
     }
@@ -293,13 +312,15 @@ async function renderHtmlExport({ model, archiveRoot, mediaResolver, onMediaProg
     const links = entry.links.length ? `<div class="links">${entry.links.map((link) => `<a href="${escapeHtml(link.url)}">${escapeHtml(link.label)}</a>`).join("")}</div>` : "";
     const likes = model.options.includeLikes ? `<section class="interaction"><strong>${entry.likeCount} 人点赞</strong>${entry.likes.length ? `<p>${entry.likes.map(escapeHtml).join("、")}</p>` : "<p>没有保存可见点赞者名单。</p>"}</section>` : "";
     const comments = model.options.includeComments ? `<section class="interaction"><strong>评论 ${entry.commentCount}</strong>${entry.comments.length ? entry.comments.map((comment) => `<p><b>${escapeHtml(comment.authorName)}</b>：${htmlText(comment.text)}</p>`).join("") : "<p>没有保存可见评论正文。</p>"}</section>` : "";
-    return `<article class="entry"><header><span>${entry.type === "post" ? "说说" : entry.type === "journal" ? "日志" : "相册"}</span><time>${escapeHtml(entry.date)}</time></header>${entry.title ? `<h2>${htmlText(entry.title)}</h2>` : ""}<div class="body">${htmlText(entry.text) || "<i>（无文字）</i>"}</div>${entry.location ? `<p class="location">地点：${htmlText(entry.location)}</p>` : ""}${links}${images ? `<div class="media">${images}</div>` : ""}${likes}${comments}</article>`;
+    const posterCount = mediaByEntry[entryIndex].filter((image) => image.videoPoster).length;
+    const videoNote = entry.videoCount ? `<p class="video-note">视频 ${entry.videoCount} 个${model.options.media === "omit" ? "（已选择不包含媒体）" : posterCount ? `（已导出 ${posterCount} 张视频封面，未嵌入原视频）` : "（未取得可导出的封面）"}</p>` : "";
+    return `<article class="entry"><header><span>${entry.type === "post" ? "说说" : entry.type === "journal" ? "日志" : "相册"}</span><time>${escapeHtml(entry.date)}</time></header>${entry.title ? `<h2>${htmlText(entry.title)}</h2>` : ""}<div class="body">${htmlText(entry.text) || "<i>（无文字）</i>"}</div>${entry.location ? `<p class="location">地点：${htmlText(entry.location)}</p>` : ""}${links}${images ? `<div class="media">${images}</div>` : ""}${videoNote}${likes}${comments}</article>`;
   }).join("\n");
   return `<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline';"><title>${escapeHtml(model.title)}</title>
 <style>
-@page{size:A4;margin:16mm 15mm 18mm}*{box-sizing:border-box}body{margin:0;color:#25282c;background:#f8f5ee;font-family:"Microsoft YaHei","PingFang SC",sans-serif;line-height:1.7}.cover,.entry{width:min(780px,calc(100% - 32px));margin:24px auto;padding:28px 34px;border:1px solid #e4ded2;border-radius:12px;background:#fffdf8;box-shadow:0 10px 26px rgba(77,67,49,.06)}.cover{padding:44px 38px}.kicker,header span{color:#3978c7;font-weight:700}.cover h1{margin:10px 0 8px;font:700 34px/1.25 "STZhongsong","SimSun",serif}.cover p{margin:4px 0;color:#757a80;font-size:13px}.privacy{margin-top:22px;padding-top:14px;border-top:1px solid #e8e2d8}header{display:flex;justify-content:space-between;gap:16px;color:#8a8d90;font-size:12px}.entry h2{margin:13px 0 8px;font-size:21px}.body{margin-top:14px;font:400 17px/1.9 "STZhongsong","SimSun",serif;overflow-wrap:anywhere}.body i{color:#999;font-style:normal}.location,.links a{font-size:12px}.location{color:#757a80}.links{display:flex;flex-wrap:wrap;gap:7px;margin-top:12px}.links a{padding:5px 9px;border-radius:6px;color:#356da9;background:#edf4fb;text-decoration:none}.media{margin-top:16px;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.media img{display:block;width:100%;max-height:480px;object-fit:contain;border-radius:7px;background:#f2efe8}.interaction{margin-top:18px;padding-top:13px;border-top:1px solid #e8e2d8}.interaction strong{font-size:13px}.interaction p{margin:7px 0 0;color:#666c72;font-size:12px;overflow-wrap:anywhere}.interaction b{color:#506d91}.qq-emotion-text{display:inline-block;padding:0 4px;border-radius:4px;color:#7c6848;background:#f1eadc;font-size:.78em}@media print{body{background:#fff}.cover,.entry{width:100%;margin:0 0 8mm;padding:0 0 7mm;border:0;border-bottom:1px solid #ddd;border-radius:0;box-shadow:none;break-inside:auto}.cover{break-after:page}.media img{break-inside:avoid}.interaction{break-inside:avoid}}
-</style></head><body><section class="cover"><span class="kicker">QQ 空间本地档案</span><h1>${escapeHtml(model.title)}</h1><p>${model.counts.entries} 条内容 · ${model.counts.media} 张配图 · ${model.counts.comments} 条可见评论 · ${model.counts.likes} 位可见点赞者</p><p>导出时间：${escapeHtml(model.exportedAt)}</p><p class="privacy">${escapeHtml(model.privacyNote)}</p></section>${cards}</body></html>`;
+@page{size:A4;margin:16mm 15mm 18mm}*{box-sizing:border-box}body{margin:0;color:#25282c;background:#f8f5ee;font-family:"Microsoft YaHei","PingFang SC",sans-serif;line-height:1.7}.cover,.entry{width:min(780px,calc(100% - 32px));margin:24px auto;padding:28px 34px;border:1px solid #e4ded2;border-radius:12px;background:#fffdf8;box-shadow:0 10px 26px rgba(77,67,49,.06)}.cover{padding:44px 38px}.kicker,header span{color:#3978c7;font-weight:700}.cover h1{margin:10px 0 8px;font:700 34px/1.25 "STZhongsong","SimSun",serif}.cover p{margin:4px 0;color:#757a80;font-size:13px}.privacy{margin-top:22px;padding-top:14px;border-top:1px solid #e8e2d8}header{display:flex;justify-content:space-between;gap:16px;color:#8a8d90;font-size:12px}.entry h2{margin:13px 0 8px;font-size:21px}.body{margin-top:14px;font:400 17px/1.9 "STZhongsong","SimSun",serif;overflow-wrap:anywhere}.body i{color:#999;font-style:normal}.location,.links a{font-size:12px}.location{color:#757a80}.links{display:flex;flex-wrap:wrap;gap:7px;margin-top:12px}.links a{padding:5px 9px;border-radius:6px;color:#356da9;background:#edf4fb;text-decoration:none}.media{margin-top:16px;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.media img{display:block;width:100%;max-height:480px;object-fit:contain;border-radius:7px;background:#f2efe8}.video-note{margin:9px 0 0;color:#737a80;font-size:12px}.interaction{margin-top:18px;padding-top:13px;border-top:1px solid #e8e2d8}.interaction strong{font-size:13px}.interaction p{margin:7px 0 0;color:#666c72;font-size:12px;overflow-wrap:anywhere}.interaction b{color:#506d91}.qq-emotion-text{display:inline-block;padding:0 4px;border-radius:4px;color:#7c6848;background:#f1eadc;font-size:.78em}@media print{body{background:#fff}.cover,.entry{width:100%;margin:0 0 8mm;padding:0 0 7mm;border:0;border-bottom:1px solid #ddd;border-radius:0;box-shadow:none;break-inside:auto}.cover{break-after:page}.media img{break-inside:avoid}.interaction{break-inside:avoid}}
+</style></head><body><section class="cover"><span class="kicker">QQ 空间本地档案</span><h1>${escapeHtml(model.title)}</h1><p>${model.counts.entries} 条内容 · ${model.counts.media} 张图片或视频封面 · ${model.counts.videos} 个视频记录 · ${model.counts.comments} 条可见评论 · ${model.counts.likes} 位可见点赞者</p><p>导出时间：${escapeHtml(model.exportedAt)}</p><p class="privacy">${escapeHtml(model.privacyNote)}</p></section>${cards}</body></html>`;
 }
 
 function docxImageType(mime) {
@@ -318,7 +339,7 @@ async function renderDocxExport({ model, archiveRoot, mediaResolver, onMediaProg
   const children = [
     new Paragraph({ text: "QQ 空间本地档案", style: "Kicker" }),
     new Paragraph({ text: model.title, heading: HeadingLevel.TITLE }),
-    new Paragraph({ text: `${model.counts.entries} 条内容 · ${model.counts.media} 张配图 · ${model.counts.comments} 条可见评论 · ${model.counts.likes} 位可见点赞者`, style: "Meta" }),
+    new Paragraph({ text: `${model.counts.entries} 条内容 · ${model.counts.media} 张图片或视频封面 · ${model.counts.videos} 个视频记录 · ${model.counts.comments} 条可见评论 · ${model.counts.likes} 位可见点赞者`, style: "Meta" }),
     new Paragraph({ text: `导出时间：${model.exportedAt}`, style: "Meta" }),
     new Paragraph({ text: model.privacyNote, style: "Privacy" }),
   ];
@@ -340,6 +361,7 @@ async function renderDocxExport({ model, archiveRoot, mediaResolver, onMediaProg
       if (!type) continue;
       children.push(new Paragraph({ alignment: AlignmentType.CENTER, spacing: { before: 120, after: 120 }, children: [new ImageRun({ type, data: image.data, transformation: imageDimensions(image) })] }));
     }
+    if (entry.videoCount) children.push(new Paragraph({ text: `视频 ${entry.videoCount} 个（Word 中仅保留可用封面）`, style: "Meta" }));
     if (model.options.includeLikes) {
       children.push(new Paragraph({ children: [new TextRun({ text: `${entry.likeCount} 人点赞`, bold: true, color: "30343A" })], spacing: { before: 150, after: 60 } }));
       children.push(new Paragraph({ text: entry.likes.length ? entry.likes.join("、") : "没有保存可见点赞者名单。", style: "Interaction" }));

@@ -7,7 +7,7 @@ const { pathToFileURL } = require("node:url");
 const { isSafeExternalUrl, isTrustedAppUrl } = require("../desktop/security.cjs");
 const { assertMinimumFreeSpace } = require("../desktop/storage-safety.cjs");
 const { RELEASES_API, RELEASES_ATOM, checkForUpdates, compareVersions, parseVersion, validReleaseUrl } = require("../desktop/update.cjs");
-const { MAX_MEDIA_BYTES, downloadMedia, fetchAllowedMedia, readLimitedResponseBody } = require("../desktop/collector/qzone-adapter.cjs");
+const { MAX_MEDIA_BYTES, MAX_VIDEO_BYTES, downloadMedia, fetchAllowedMedia, readLimitedResponseBody } = require("../desktop/collector/qzone-adapter.cjs");
 const { normalizeMediaUrl } = require("../desktop/collector/qzone-parser.cjs");
 const { ArchiveStore } = require("../desktop/archive/store.cjs");
 
@@ -100,6 +100,21 @@ test("media redirect target is revalidated and safe image succeeds", async () =>
   assert.equal(result.finalUrl, "https://b.qpic.cn/final.png");
 });
 
+test("native QQ videos require a trusted media host, video MIME and a bounded size", async () => {
+  const common = { ok: true, status: 200, headers: new Headers({ "content-type": "video/mp4", "content-length": "4" }), body: null, arrayBuffer: async () => Uint8Array.of(0, 0, 0, 1).buffer };
+  const result = await downloadMedia({ sourceUrl: "https://photovideo.photo.qq.com/native.mp4", uin: "123456", kind: "video" }, {
+    fetch: async () => ({ ...common, url: "https://photovideo.photo.qq.com/native.mp4" }),
+  });
+  assert.equal(result.contentType, "video/mp4");
+  assert.equal(result.bytes.length, 4);
+  await assert.rejects(() => downloadMedia({ sourceUrl: "https://photovideo.photo.qq.com/native.mp4", uin: "123456", kind: "video" }, {
+    fetch: async () => ({ ...common, headers: new Headers({ "content-type": "image/jpeg", "content-length": "4" }), url: "https://photovideo.photo.qq.com/native.mp4" }),
+  }), /媒体响应类型异常/);
+  await assert.rejects(() => readLimitedResponseBody({
+    headers: new Headers({ "content-length": String(MAX_VIDEO_BYTES + 1) }),
+  }, MAX_VIDEO_BYTES, "单个视频"), /256 MB/);
+});
+
 test("untrusted redirects are rejected before making the redirected request", async () => {
   let requests = 0;
   await assert.rejects(() => fetchAllowedMedia(async () => {
@@ -125,11 +140,88 @@ test("release configuration includes icon, portable archive, checksums and suppl
   const packageJson = JSON.parse(await fs.readFile(path.join(__dirname, "..", "package.json"), "utf8"));
   const workflow = await fs.readFile(path.join(__dirname, "..", ".github", "workflows", "release.yml"), "utf8");
   const icon = await fs.readFile(path.join(__dirname, "..", "build", "icon.png"));
-  assert.equal(packageJson.version, "0.6.2-alpha");
+  assert.ok(parseVersion(packageJson.version), "release version follows the documented version format");
   assert.equal(packageJson.build.win.icon, "build/icon.png");
   assert.match(packageJson.scripts["desktop:dist"], /--publish\s+never/);
   assert.equal(icon.subarray(1, 4).toString("ascii"), "PNG");
   for (const required of ["release:portable", "release:metadata", "SHA256SUMS.txt", "SBOM.cdx.json", "THIRD_PARTY_LICENSES.json", "WINDOWS_CSC_LINK"]) {
     assert.match(workflow, new RegExp(required.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   }
+});
+
+
+test("bounded streams await the sink, reject truncation and cancel after disk failure", async () => {
+  let cancelled = false;
+  const stream = new ReadableStream({ pull(controller) { controller.enqueue(Uint8Array.of(1, 2)); }, cancel() { cancelled = true; } });
+  await assert.rejects(() => readLimitedResponseBody(new Response(stream), 10, "媒体", async () => { throw new Error("disk full"); }), /disk full/);
+  assert.equal(cancelled, true);
+  await assert.rejects(() => readLimitedResponseBody(new Response("abc", { headers: { "content-length": "9" } }), 10), /下载不完整/);
+  let written = "";
+  const result = await readLimitedResponseBody(new Response("complete"), 20, "媒体", async (chunk) => {
+    await new Promise((resolve) => setTimeout(resolve, 1));
+    written += chunk.toString();
+  });
+  assert.equal(written, "complete");
+  assert.deepEqual(result, { size: 8 });
+});
+
+test("completed pagination delays release their cancellation listeners", async () => {
+  const { getEventListeners } = require("node:events");
+  const { abortableDelay } = require("../desktop/collector/qzone-adapter.cjs");
+  const controller = new AbortController();
+  for (let index = 0; index < 20; index += 1) await abortableDelay(1, controller.signal);
+  assert.equal(getEventListeners(controller.signal, "abort").length, 0);
+  const pending = abortableDelay(10000, controller.signal);
+  controller.abort();
+  await assert.rejects(() => pending);
+  assert.equal(getEventListeners(controller.signal, "abort").length, 0);
+});
+
+test("media fallback retries transient blocking but never repeats a failed disk write", async () => {
+  const attempts = [];
+  const response = () => new Response("abc", { headers: { "content-type": "video/mp4", "content-length": "3" } });
+  const result = await downloadMedia({ sourceUrl: "https://photovideo.photo.qq.com/a.mp4", uin: "12345678", kind: "video" }, {
+    fetch: async (_url, options) => { attempts.push(options.credentials); if (attempts.length === 1) throw new Error("net::ERR_BLOCKED_BY_CLIENT"); return response(); },
+  });
+  assert.deepEqual(attempts, ["include", "omit"]);
+  assert.equal(result.bytes.toString(), "abc");
+  let requests = 0;
+  await assert.rejects(() => downloadMedia({ sourceUrl: "https://photovideo.photo.qq.com/a.mp4", kind: "video" }, {
+    fetch: async () => { requests += 1; return response(); },
+    consumeResponse: async () => { throw new Error("disk full"); },
+  }), /disk full/);
+  assert.equal(requests, 1);
+  assert.equal(normalizeMediaUrl("https://user:secret@qpic.cn/a.jpg"), "");
+  assert.equal(normalizeMediaUrl("https://qpic.cn:8443/a.jpg"), "");
+});
+
+
+test("release manifests include only the current version and matching update metadata", async () => {
+  const { selectReleaseAssets } = await import("../scripts/release-assets.mjs");
+  const names = ["QZoneJournal-0.7.0-alpha-x64.exe", "QZoneJournal-0.7.1-alpha-x64.exe", "QZoneJournal-0.7.1-alpha-portable.zip", "latest.yml", "SBOM.cdx.json", "THIRD_PARTY_LICENSES.json"];
+  assert.deepEqual(selectReleaseAssets(names, "0.7.1-alpha", "version: 0.7.0-alpha"), ["QZoneJournal-0.7.1-alpha-portable.zip", "QZoneJournal-0.7.1-alpha-x64.exe", "SBOM.cdx.json", "THIRD_PARTY_LICENSES.json"]);
+  assert.ok(selectReleaseAssets(names, "0.7.1-alpha", "version: 0.7.1-alpha").includes("latest.yml"));
+});
+
+
+test("fullscreen is granted only to the trusted application main frame", () => {
+  const { restrictSessionPermissions } = require("../desktop/security.cjs");
+  let check, request;
+  const target = { setPermissionCheckHandler: handler => { check = handler; }, setPermissionRequestHandler: handler => { request = handler; } };
+  const url = "file:///app/dist/client/index.html";
+  const webContents = { getURL: () => url, isDestroyed: () => false };
+  restrictSessionPermissions(target, { fullscreenWebContents: webContents, trustedAppUrl: value => value === url });
+  const details = { isMainFrame: true, requestingUrl: url };
+  assert.equal(check(webContents, "fullscreen", "file://", details), true);
+  let granted;
+  request(webContents, "fullscreen", value => { granted = value; }, details);
+  assert.equal(granted, true);
+  for (const permission of ["media", "geolocation", "notifications", "automatic-fullscreen", "clipboard-read"]) assert.equal(check(webContents, permission, "file://", details), false);
+  for (const [contents, context] of [[null, details], [{ ...webContents }, details], [webContents, { ...details, isMainFrame: false }], [webContents, { ...details, requestingUrl: "https://user.qzone.qq.com" }], [webContents, {}]]) {
+    assert.equal(check(contents, "fullscreen", "file://", context), false);
+    request(contents, "fullscreen", value => { granted = value; }, context);
+    assert.equal(granted, false);
+  }
+  restrictSessionPermissions(target);
+  assert.equal(check(webContents, "fullscreen", "file://", details), false);
 });

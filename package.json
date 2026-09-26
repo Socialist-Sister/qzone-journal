@@ -1,6 +1,6 @@
 {
   "name": "qzone-journal",
-  "version": "0.6.2-alpha",
+  "version": "0.7.4-alpha",
   "description": "Local-first QQ Space archive desktop application.",
   "author": "QZone Journal Contributors",
   "license": "MIT",
@@ -35,7 +35,8 @@
     "test:ai-compat": "electron tests/ai-compat-smoke.cjs",
     "test:sites": "node --test tests/sites-worker.test.mjs",
     "test:security": "node --test tests/security.test.cjs",
-    "test:all": "pnpm run test:archive && pnpm run test:security && pnpm run test:collector && pnpm run test:session && pnpm run test:desktop && pnpm run test:export && pnpm run test:performance && pnpm run test:ai-compat && pnpm run build && pnpm run test:sites"
+    "test:all": "pnpm run test:archive && pnpm run test:security && pnpm run test:contracts && pnpm run test:collector && pnpm run test:session && pnpm run test:desktop && pnpm run test:export && pnpm run test:performance && pnpm run test:ai-compat && pnpm run build && pnpm run test:sites",
+    "test:contracts": "node --test tests/module-contracts.test.mjs && electron tests/main-services-smoke.cjs"
   },
   "devDependencies": {
     "@phosphor-icons/react": "^2.1.10",

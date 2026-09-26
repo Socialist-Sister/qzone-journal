@@ -18,11 +18,16 @@ const LIKE_LIST_URLS = [
 function abortableDelay(milliseconds, signal) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) return reject(signal.reason || new Error("采集任务已取消"));
-    const timer = setTimeout(resolve, milliseconds);
-    signal?.addEventListener("abort", () => {
+    const onAbort = () => {
       clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
       reject(signal.reason || new Error("采集任务已取消"));
-    }, { once: true });
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, milliseconds);
+    signal?.addEventListener("abort", onAbort, { once: true });
   });
 }
 
@@ -111,7 +116,7 @@ async function fetchLikeListPageOnce({ uin, tid, gTk, beginUin = "0", count = LI
         method: "GET",
         credentials: "include",
         redirect: "follow",
-        signal,
+        signal: AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(30000)]),
         headers: {
           accept: "application/json, text/javascript, */*; q=0.01",
           "accept-language": "zh-CN,zh;q=0.9",
@@ -159,19 +164,33 @@ async function fetchLikeList({ uin, tid, gTk, signal }, dependencies = {}) {
   let beginUin = "0";
   let total = 0;
   const diagnostics = [];
+  let partial = false;
+  let partialCode = "";
   for (let pageNumber = 1; pageNumber <= 50; pageNumber += 1) {
-    const page = await fetchLikeListPageOnce({ uin, tid, gTk, beginUin, signal }, dependencies);
+    let page;
+    try { page = await fetchLikeListPageOnce({ uin, tid, gTk, beginUin, signal }, dependencies); }
+    catch (error) {
+      if (signal?.aborted || !people.size) throw error;
+      partial = true;
+      partialCode = String(error?.code || "QZONE_INTERACTION_UNAVAILABLE");
+      break;
+    }
     diagnostics.push({ pageNumber, ...page.diagnostic });
     for (const person of page.likes) {
       const key = person.uin || `name:${person.name}`;
       if (!people.has(key)) people.set(key, person);
     }
     total = Math.max(total, Number(page.total) || 0, people.size);
-    if (!page.hasMore || !page.nextCursor || page.nextCursor === beginUin) break;
+    if (!page.hasMore) break;
+    if (!page.nextCursor || page.nextCursor === beginUin || pageNumber === 50) {
+      partial = true;
+      partialCode = "QZONE_INTERACTION_PAGE_LIMIT";
+      break;
+    }
     beginUin = page.nextCursor;
     await delay(900 + Math.floor(Math.random() * 400), signal);
   }
-  return { likes: [...people.values()].slice(0, 3000), total, diagnostics };
+  return { likes: [...people.values()].slice(0, 3000), total, diagnostics, partial, partialCode };
 }
 
 async function fetchMoodPageOnce({ uin, gTk, cursor = "", count = FEEDS3_PAGE_SIZE, signal, scope = 1 }, dependencies = {}) {
@@ -187,7 +206,7 @@ async function fetchMoodPageOnce({ uin, gTk, cursor = "", count = FEEDS3_PAGE_SI
         method: "GET",
         credentials: "include",
         redirect: "follow",
-        signal,
+        signal: AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(30000)]),
         headers: {
           accept: "application/json, text/javascript, */*; q=0.01",
           "accept-language": "zh-CN,zh;q=0.9",
@@ -256,7 +275,7 @@ async function fetchMoodCategoryPageOnce({ uin, gTk, cursor = "", count = MOOD_P
         method: "GET",
         credentials: "include",
         redirect: "follow",
-        signal,
+        signal: AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(30000)]),
         headers: {
           accept: "application/json, text/javascript, */*; q=0.01",
           "accept-language": "zh-CN,zh;q=0.9",
@@ -341,37 +360,52 @@ async function fetchMoodPage(options, dependencies = {}) {
 }
 
 const MAX_MEDIA_BYTES = 80 * 1024 * 1024;
+const MAX_VIDEO_BYTES = 256 * 1024 * 1024;
 const SAFE_IMAGE_TYPES = new Set([
   "image/avif", "image/bmp", "image/gif", "image/jpeg", "image/jpg", "image/pjpeg", "image/png", "image/x-png", "image/webp", "image/apng",
 ]);
+const SAFE_VIDEO_TYPES = new Set(["video/mp4", "video/x-m4v", "video/quicktime"]);
 
-async function readLimitedResponseBody(response, maximumBytes = MAX_MEDIA_BYTES) {
+async function readLimitedResponseBody(response, maximumBytes = MAX_MEDIA_BYTES, label = "单张图片", onChunk) {
   const declaredLength = Number(response.headers.get("content-length"));
-  if (Number.isFinite(declaredLength) && declaredLength > maximumBytes) throw new Error("单张图片超过 80 MB 安全限制");
-  if (!response.body?.getReader) {
-    const bytes = Buffer.from(await response.arrayBuffer());
-    if (bytes.length > maximumBytes) throw new Error("单张图片超过 80 MB 安全限制");
-    return bytes;
+  const maximumMegabytes = Math.round(maximumBytes / 1024 / 1024);
+  const tooLarge = () => new Error(`${label}超过 ${maximumMegabytes} MB 安全限制`);
+  if (Number.isFinite(declaredLength) && declaredLength > maximumBytes) {
+    await response.body?.cancel?.().catch(() => undefined);
+    throw tooLarge();
   }
-  const reader = response.body.getReader();
   const chunks = [];
   let size = 0;
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      const chunk = Buffer.from(value);
-      size += chunk.length;
-      if (size > maximumBytes) {
-        await reader.cancel().catch(() => undefined);
-        throw new Error("单张图片超过 80 MB 安全限制");
+  const accept = async (value) => {
+    const chunk = Buffer.from(value.buffer, value.byteOffset, value.byteLength);
+    size += chunk.length;
+    if (size > maximumBytes) throw tooLarge();
+    if (onChunk) await onChunk(chunk);
+    else chunks.push(chunk);
+  };
+  if (!response.body?.getReader) {
+    await accept(new Uint8Array(await response.arrayBuffer()));
+  } else {
+    const reader = response.body.getReader();
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        await accept(value);
       }
-      chunks.push(chunk);
+    } catch (error) {
+      await reader.cancel().catch(() => undefined);
+      throw error;
+    } finally {
+      reader.releaseLock?.();
     }
-  } finally {
-    reader.releaseLock?.();
   }
-  return Buffer.concat(chunks, size);
+  // Content-Length describes compressed bytes when Content-Encoding is present.
+  if (declaredLength > 0 && !response.headers.get("content-encoding") && size !== declaredLength) {
+    throw new Error(`${label}下载不完整，请稍后重新备份`);
+  }
+  if (!size) throw new Error(`${label}响应为空`);
+  return onChunk ? { size } : Buffer.concat(chunks, size);
 }
 
 async function fetchAllowedMedia(fetchRequest, initialUrl, options) {
@@ -380,21 +414,25 @@ async function fetchAllowedMedia(fetchRequest, initialUrl, options) {
     const response = await fetchRequest(currentUrl, { ...options, redirect: "manual" });
     if (![301, 302, 303, 307, 308].includes(response.status)) return response;
     const location = response.headers.get("location");
+    await response.body?.cancel?.().catch(() => undefined);
     let redirectedUrl = "";
     try {
       redirectedUrl = normalizeMediaUrl(new URL(location, currentUrl).toString());
     } catch {
       redirectedUrl = "";
     }
-    if (!redirectedUrl) throw new Error("图片下载重定向到了不受信任的地址");
+    if (!redirectedUrl) throw new Error("媒体下载重定向到了不受信任的地址");
     currentUrl = redirectedUrl;
   }
-  throw new Error("图片下载重定向次数超过安全限制");
+  throw new Error("媒体下载重定向次数超过安全限制");
 }
 
-async function downloadMedia({ sourceUrl, uin, signal }, dependencies = {}) {
+async function downloadMedia({ sourceUrl, uin, signal, kind = "image" }, dependencies = {}) {
   const safeUrl = normalizeMediaUrl(sourceUrl);
   if (!safeUrl) throw new Error("媒体地址不在 QQ 空间允许列表中");
+  const isVideo = kind === "video";
+  const label = isVideo ? "单个视频" : "单张图片";
+  const maximumBytes = isVideo ? MAX_VIDEO_BYTES : MAX_MEDIA_BYTES;
   const fetchRequest = dependencies.fetch || net.fetch;
   const variants = [
     { credentials: "include", referer: QZONE_USER_URL(uin) },
@@ -402,30 +440,39 @@ async function downloadMedia({ sourceUrl, uin, signal }, dependencies = {}) {
   ];
   let lastError;
   for (const variant of variants) {
+    let response;
+    let consuming = false;
     try {
-      const response = await fetchAllowedMedia(fetchRequest, safeUrl, {
+      response = await fetchAllowedMedia(fetchRequest, safeUrl, {
         method: "GET",
         credentials: variant.credentials,
-        signal,
+        signal: AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(isVideo ? 180000 : 60000)]),
         headers: {
-          accept: "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+          accept: isVideo ? "video/mp4,video/quicktime,video/*;q=0.9,*/*;q=0.2" : "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
           referer: variant.referer,
         },
       });
-      if (!response.ok) throw new Error(`图片下载失败（HTTP ${response.status}）`);
+      if (!response.ok) throw new Error(`${isVideo ? "视频" : "图片"}下载失败（HTTP ${response.status}）`);
       const finalUrl = normalizeMediaUrl(response.url || safeUrl);
-      if (!finalUrl) throw new Error("图片下载重定向到了不受信任的地址");
+      if (!finalUrl) throw new Error("媒体下载重定向到了不受信任的地址");
       const contentType = String(response.headers.get("content-type") || "application/octet-stream").split(";", 1)[0].trim().toLowerCase();
-      if (!SAFE_IMAGE_TYPES.has(contentType)) throw new Error(`媒体响应类型异常：${contentType}`);
-      const bytes = await readLimitedResponseBody(response);
-      if (!bytes.length) throw new Error("图片响应为空");
+      const typeAllowed = isVideo ? SAFE_VIDEO_TYPES.has(contentType) : SAFE_IMAGE_TYPES.has(contentType);
+      if (!typeAllowed) throw new Error(`媒体响应类型异常：${contentType}`);
+      if (dependencies.consumeResponse) {
+        consuming = true;
+        return await dependencies.consumeResponse(response, { contentType, finalUrl, maximumBytes, label });
+      }
+      const bytes = await readLimitedResponseBody(response, maximumBytes, label);
+      if (!bytes.length) throw new Error(`${isVideo ? "视频" : "图片"}响应为空`);
       return { bytes, contentType, finalUrl };
     } catch (error) {
       if (signal?.aborted) throw error;
+      await response?.body?.cancel?.().catch(() => undefined);
+      if (consuming || !/ERR_(?:BLOCKED|FAILED|CONNECTION|NETWORK)|Failed to fetch|fetch failed|HTTP (?:408|429|5\d\d)/i.test(String(error?.message || error))) throw error;
       lastError = error;
     }
   }
-  throw lastError || new Error("图片下载失败");
+  throw lastError || new Error(`${isVideo ? "视频" : "图片"}下载失败`);
 }
 
 async function probeSession({ uin, signal }) {
@@ -433,7 +480,7 @@ async function probeSession({ uin, signal }) {
     method: "GET",
     credentials: "include",
     redirect: "follow",
-    signal,
+    signal: AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(30000)]),
     headers: { accept: "text/html,application/xhtml+xml" },
   });
   const finalUrl = response.url || QZONE_USER_URL(uin);
@@ -456,4 +503,4 @@ function createCollectionPlan(options) {
   }));
 }
 
-module.exports = { FEEDS3_PAGE_SIZE, LIKE_LIST_PAGE_SIZE, MAX_MEDIA_BYTES, MOOD_PAGE_SIZE, SAFE_IMAGE_TYPES, abortableDelay, buildFeeds3Url, buildLikeListUrl, buildMoodListUrl, createCollectionPlan, downloadMedia, fetchAllowedMedia, fetchLikeList, fetchLikeListPageOnce, fetchMoodCategoryPageOnce, fetchMoodPage, fetchMoodPageOnce, probeSession, readLimitedResponseBody };
+module.exports = { FEEDS3_PAGE_SIZE, LIKE_LIST_PAGE_SIZE, MAX_MEDIA_BYTES, MAX_VIDEO_BYTES, MOOD_PAGE_SIZE, SAFE_IMAGE_TYPES, SAFE_VIDEO_TYPES, abortableDelay, buildFeeds3Url, buildLikeListUrl, buildMoodListUrl, createCollectionPlan, downloadMedia, fetchAllowedMedia, fetchLikeList, fetchLikeListPageOnce, fetchMoodCategoryPageOnce, fetchMoodPage, fetchMoodPageOnce, probeSession, readLimitedResponseBody };

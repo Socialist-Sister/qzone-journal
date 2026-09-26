@@ -3,7 +3,8 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { app, BrowserWindow, ipcMain } = require("electron");
 
-if (process.env.QZONE_VISUAL_CAPTURE_DIR) app.disableHardwareAcceleration();
+// Keep decoder and canvas fixtures deterministic on headless Windows runners.
+app.disableHardwareAcceleration();
 
 async function capturePageWithRetry(window, rect) {
   let lastError;
@@ -148,8 +149,8 @@ async function run() {
     range: "2026—2026",
     integrity: { needsRepair: false, corruptEntries: [], missingMedia: [], unsafeMedia: [] },
     entries: [
-      { id: "real-post-1", type: "post", date: "2026-08-29T10:00:00+08:00", displayDate: "2026年8月29日 10:00", title: null, text: "真实归档流程测试 @{uin:983109480,nick:Lorrinius.Asuka.,who:1,auto:1} " + "这是一段用于验证详情滚动的长内容。".repeat(160) + " [em]e10264[/em]", links: [{ url: "https://www.bilibili.com/video/BV1Test", label: "转发的视频" }, { url: "javascript:alert(1)", label: "不安全链接" }, { url: "不是有效网址", label: "损坏链接" }], images: ["./assets/demo/spring-blossom.png"], likes: ["小周", "另一位点赞者"], likeCount: 4, comments: [{ name: "Lorrinius.Asuka.这是一段很长的昵称", text: "测试评论 [em]e10319[/em] @{uin:90002,nick:阿程,who:1,auto:1}" }] },
-      { id: "real-post-2", type: "post", date: "2026-08-28T10:00:00+08:00", displayDate: "2026年8月28日 10:00", title: null, text: "一条用于验证页面滚动接力的简短说说。", links: [], images: [], likes: [], comments: [] },
+      { id: "real-post-1", type: "post", date: "2026-08-29T10:00:00+08:00", displayDate: "2026年8月29日 10:00", title: null, text: "真实归档流程测试 @{uin:983109480,nick:Lorrinius.Asuka.,who:1,auto:1} " + "这是一段用于验证详情滚动的长内容。".repeat(160) + " [em]e10264[/em]", links: [{ url: "https://www.bilibili.com/video/BV1Test", label: "转发的视频" }, { url: "javascript:alert(1)", label: "不安全链接" }, { url: "不是有效网址", label: "损坏链接" }], images: ["./assets/demo/spring-blossom.png"], videos: [], likes: ["小周", "另一位点赞者"], likeCount: 4, comments: [{ name: "Lorrinius.Asuka.这是一段很长的昵称", text: "测试评论 [em]e10319[/em] @{uin:90002,nick:阿程,who:1,auto:1}回复正文" }] },
+      { id: "real-post-2", type: "post", date: "2026-08-28T10:00:00+08:00", displayDate: "2026年8月28日 10:00", title: null, text: "一条仅包含 QQ 原生视频的说说。", links: [], images: [], videos: [{ id: "video-only", src: "", poster: "./assets/demo/riverside.png", durationMs: 12500, available: false }], likes: [], comments: [] },
       { id: "real-gallery", type: "post", date: "2026-08-27T12:00:00+08:00", displayDate: "2026年8月27日 12:00", title: null, text: "多图查看器交互测试", links: [], images: ["./assets/demo/spring-blossom.png", "./assets/demo/riverside.png", "./assets/demo/seaside.png"], likes: [], comments: [] },
       ...Array.from({ length: 7 }, (_, index) => ({ id: "real-post-extra-" + index, type: "post", date: "2026-08-27T10:00:00+08:00", displayDate: "2026年8月27日 10:00", title: null, text: "用于让档案外层页面保持可滚动的测试内容 " + (index + 1), links: [], images: [], likes: [], comments: [] })),
     ],
@@ -166,8 +167,8 @@ async function run() {
     return { repaired: true, quarantinedEntries: 0, mediaMarkedForRedownload: 0 };
   });
   ipcMain.handle("desktop:qzone:cancel-collection", () => ({ cancelled: true }));
-  ipcMain.handle("desktop:app:info", () => ({ name: "空间备份", version: "0.6.2-alpha", platform: process.platform, packaged: false }));
-  ipcMain.handle("desktop:app:check-for-updates", () => ({ checked: true, updateAvailable: false, currentVersion: "0.6.2-alpha", latestVersion: "0.6.2-alpha" }));
+  ipcMain.handle("desktop:app:info", () => ({ name: "空间备份", version: require("../package.json").version, platform: process.platform, packaged: false }));
+  ipcMain.handle("desktop:app:check-for-updates", () => ({ checked: true, updateAvailable: false, currentVersion: require("../package.json").version, latestVersion: require("../package.json").version }));
   const window = new BrowserWindow({
     width: Number(process.env.QZONE_TEST_WIDTH) || 1120,
     height: Number(process.env.QZONE_TEST_HEIGHT) || 720,
@@ -182,6 +183,10 @@ async function run() {
     },
   });
 
+  require("../desktop/security.cjs").restrictSessionPermissions(window.webContents.session, {
+    fullscreenWebContents: window.webContents,
+    trustedAppUrl: (url) => require("../desktop/security.cjs").isTrustedAppUrl(url, { packaged: true, clientRoot: path.join(__dirname, "..", "dist", "client") }),
+  });
   window.webContents.setZoomFactor(1);
   await window.loadFile(path.join(__dirname, "..", "dist", "client", "index.html"));
   window.webContents.setZoomFactor(1);
@@ -354,7 +359,7 @@ async function run() {
     findButton("检查更新")?.click();
     await new Promise((resolve) => setTimeout(resolve, 40));
     const result = {
-      showsCurrentVersion: document.body.innerText.includes("当前版本：0.6.2-alpha"),
+      showsCurrentVersion: document.body.innerText.includes(${JSON.stringify("当前版本：" + require("../package.json").version)}),
       checksUpdatesInApp: Boolean(findButton("检查更新")) && document.body.innerText.includes("GitHub 上最新的公开版本"),
       explainsTemporarySession: document.body.innerText.includes("采集结束后自动清除临时会话"),
       readableSmallText: parseFloat(getComputedStyle(document.querySelector(".about-product-copy small")).fontSize) >= 11,
@@ -465,7 +470,7 @@ async function run() {
     result.replacedQqEmotion = document.querySelectorAll(".qq-emotion, .qq-emotion-fallback").length >= 2 && !document.body.innerText.includes("[em]e10264[/em]");
     result.qqEmotionUsesOfficialAsset = document.querySelector('.qq-emotion[src*="qzonestyle.gtimg.cn/qzone/em/e10264.gif"]') !== null;
     result.normalizedQqMentions = document.body.innerText.includes("@Lorrinius.Asuka.")
-      && document.body.innerText.includes("@阿程")
+      && document.body.innerText.includes("@阿程 回复正文")
       && !document.body.innerText.includes("@{uin:");
     const commentAuthor = detail.querySelector(".detail-comment b");
     const commentRowStyle = getComputedStyle(detail.querySelector(".detail-comment"));
@@ -499,6 +504,16 @@ async function run() {
     await new Promise((resolve) => setTimeout(resolve, 40));
     result.viewerDoubleClickResets = Number(viewerImage.dataset.zoom) === 1;
     document.querySelector('button[aria-label="关闭图片查看器"]')?.click();
+    const videoEntry = [...document.querySelectorAll(".timeline-entry")].find((entry) => entry.textContent.includes("仅包含 QQ 原生视频"));
+    videoEntry?.click();
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    const videoTile = document.querySelector(".media-grid .media-video");
+    const hasPlayOverlay = Boolean(videoTile?.querySelector(".media-play"));
+    videoTile?.click();
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    result.showsNativeVideoPoster = hasPlayOverlay && document.querySelector(".viewer-video.is-poster-only .video-poster") !== null
+      && document.body.innerText.includes("仅保留视频封面") && !document.querySelector(".viewer-video video");
+    document.querySelector('.viewer-close')?.click();
     await new Promise((resolve) => setTimeout(resolve, 20));
     const archiveScroller = document.querySelector(".utility-view");
     archiveScroller.scrollTop = archiveScroller.scrollHeight;
@@ -533,7 +548,9 @@ async function run() {
     await new Promise((resolve) => setTimeout(resolve, 30));
     result.hasRepairAction = Boolean(findButton("检查与修复"));
     findButton("检查与修复")?.click();
-    await new Promise((resolve) => setTimeout(resolve, 120));
+    for (let attempt = 0; attempt < 100 && !document.querySelector(".window-notice")?.textContent.includes("档案检查完成"); attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    }
     result.repairNotice = document.querySelector(".window-notice")?.textContent || "";
     result.repairCompleted = result.repairNotice.includes("档案检查完成");
     return result;
@@ -991,6 +1008,173 @@ async function run() {
   assert.equal(persistenceFlow.passedModelRows, 2);
   assert.equal(persistenceFlow.settingsButtonsMatch, true);
   assert.deepEqual(testedModels, ["model-a", "model-a-2"]);
+
+
+  // Create an actual offline video locally; playback assertions must exercise a decoder, not a mock player.
+  const clipBytes = await window.webContents.executeJavaScript(`(async () => {
+    const canvas = document.createElement('canvas'); canvas.width = 480; canvas.height = 270;
+    const context = canvas.getContext('2d');
+    const photo = new Image(); photo.src = './assets/demo/riverside.png'; await photo.decode();
+    const stream = canvas.captureStream(0);
+    const recorder = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp8' });
+    const chunks = [];
+    recorder.ondataavailable = event => chunks.push(event.data);
+    const stopped = new Promise(resolve => { recorder.onstop = resolve; });
+    recorder.start();
+    const timer = setInterval(() => { context.drawImage(photo, 0, 0, 480, 270); stream.getVideoTracks()[0].requestFrame(); }, 80);
+    await new Promise(resolve => setTimeout(resolve, 1800));
+    recorder.stop(); await stopped; clearInterval(timer); stream.getTracks().forEach(track => track.stop());
+    return [...new Uint8Array(await new Blob(chunks).arrayBuffer())];
+  })()`);
+  fs.writeFileSync(path.join(__dirname, '../dist/client/assets/test-mixed-video.webm'), Buffer.from(clipBytes));
+
+  // Exercise real renderer IPC ordering using deliberately delayed local responses.
+  ipcMain.removeHandler("desktop:qzone:read-archive");
+  let releaseOldPage;
+  let oldPageStarted = false;
+  const uiEntry = (id, text, extra = {}) => ({ id, type: "post", displayDate: "2026年9月5日", date: "2026-09-05T00:00:00Z", text, images: [], videos: [], comments: [], likes: [], ...extra });
+  const uiArchive = (entries, page = {}) => ({ id: "local-test", isDemo: false, profileName: "界面回归", lastBackupAt: "2026-08-29T10:00:00+08:00", entries, page: { total: entries.length, hasMore: false, nextCursor: null, ...page } });
+  ipcMain.handle("desktop:qzone:read-archive", async (_event, options = {}) => {
+    if (options.query === "race" && options.cursor) {
+      oldPageStarted = true;
+      await new Promise((resolve) => { releaseOldPage = resolve; });
+      return uiArchive([uiEntry("stale", "旧请求不得混入新结果")]);
+    }
+    if (options.query === "race") return uiArchive([uiEntry("race", "第一页")], { total: 2, hasMore: true, nextCursor: "1" });
+    if (options.query === "fresh") return uiArchive([uiEntry("fresh", "新的搜索结果")]);
+    if (options.query === "评论命中") return uiArchive([uiEntry("comment-match", "正文不包含关键词", { comments: [{ name: "作者", text: "评论命中" }] })]);
+    if (options.query === "videos") {
+      const photo = (name) => ({ kind: "image", src: `./assets/demo/${name}.png` });
+      const movie = (id, poster = "riverside") => ({ kind: "video", id, src: "./assets/test-mixed-video.webm", contentType: "video/webm", poster: `./assets/demo/${poster}.png`, durationMs: 1800 });
+      const parsed = require("../desktop/collector/qzone-parser.cjs").parseMoodListPage(JSON.stringify(require("./fixtures/mixed-media.cjs").mixedMediaPayload()), "12345678").entries[0];
+      const media = parsed.media.map((item, index) => item.kind === "video" ? movie(item.videoId) : photo(["spring-blossom", "riverside", "seaside"][index % 3]));
+      media.push(photo("riverside"), movie("video-d"));
+      return uiArchive([uiEntry("mixed", "照片与视频，留在同一段回忆里。", { media, images: media.filter(item => item.kind === "image").map(item => item.src), videos: media.filter(item => item.kind === "video") })]);
+    }
+    return uiArchive([uiEntry("initial", "搜索回归准备")]);
+  });
+  await window.webContents.executeJavaScript(`(async () => {
+    [...document.querySelectorAll('button')].find(b => b.textContent.trim() === '我的档案')?.click();
+    await new Promise(resolve => setTimeout(resolve, 100));
+    window.setArchiveQueryForTest = (text) => {
+      const input = document.querySelector('.archive-search input');
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, text);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    };
+    window.setArchiveQueryForTest('race');
+  })()`);
+  const waitForUI = async (predicate) => {
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline) {
+      if (await predicate()) return;
+      await new Promise(resolve => setTimeout(resolve, 25));
+    }
+    throw new Error("UI regression state timed out");
+  };
+  await waitForUI(() => oldPageStarted);
+  await window.webContents.executeJavaScript(`window.setArchiveQueryForTest('fresh')`);
+  await waitForUI(() => window.webContents.executeJavaScript(`document.querySelector('.timeline-list')?.textContent.includes('新的搜索结果')`));
+  releaseOldPage();
+  await new Promise(resolve => setTimeout(resolve, 100));
+  assert.equal(await window.webContents.executeJavaScript(`document.querySelector('.timeline-list')?.textContent.includes('旧请求不得混入')`), false);
+  await window.webContents.executeJavaScript(`window.setArchiveQueryForTest('评论命中')`);
+  await waitForUI(() => window.webContents.executeJavaScript(`document.querySelector('.timeline-list')?.textContent.includes('正文不包含关键词')`));
+  await window.webContents.executeJavaScript(`window.setArchiveQueryForTest('videos')`);
+  await waitForUI(() => window.webContents.executeJavaScript(`Boolean(document.querySelector('.media-grid .media-video'))`));
+  if (process.env.QZONE_VISUAL_CAPTURE_DIR) {
+    await forceFreshFrame(window);
+    fs.writeFileSync(path.join(process.env.QZONE_VISUAL_CAPTURE_DIR, "mixed-media-grid.png"), (await capturePageWithRetry(window)).toPNG());
+  }
+  const videoRegression = await window.webContents.executeJavaScript(`(async () => {
+    const tick = () => new Promise(resolve => setTimeout(resolve, 80));
+    const until = async (predicate) => {
+      for (let i = 0; i < 80; i++) { if (predicate()) return true; await tick(); }
+      return false;
+    };
+    const grid = document.querySelector('.media-grid');
+    const mixedGrid = grid.children.length === 9 && grid.children[3].classList.contains('media-video')
+      && grid.children[4].classList.contains('media-image') && grid.children[5].classList.contains('media-video') && grid.children[6].classList.contains('media-video') && grid.children[8].textContent.includes('+2')
+      && grid.querySelectorAll('.media-play').length === 3 && !document.querySelector('video');
+    grid.children[3].click();
+    await until(() => Boolean(document.querySelector('.viewer-video video')));
+    const first = document.querySelector('.viewer-video video');
+    const actualPlayback = await until(() => first?.readyState >= 2 && first.currentTime > 0 && !first.paused);
+    const videoControls = first.controls && !document.querySelector('.viewer-zoom-controls')
+      && document.querySelector('.image-viewer-meta span').textContent === '4 / 11'
+      && document.querySelectorAll('.image-viewer-thumbnails button').length === 11;
+    const playerBounds = first.getBoundingClientRect();
+    const stageBounds = document.querySelector('.image-viewer-image-stage').getBoundingClientRect();
+    const boundedVideo = playerBounds.top >= stageBounds.top && playerBounds.bottom <= stageBounds.bottom + 1
+      && playerBounds.left >= stageBounds.left && playerBounds.right <= stageBounds.right + 1;
+    document.querySelector('.viewer-nav.next').click(); await tick();
+    const pausedOnSwitch = first.paused && !first.isConnected && !document.querySelector('video');
+    const image = document.querySelector('.image-viewer-image-stage > img');
+    const imageAfterVideo = image.src.includes('riverside') && Boolean(document.querySelector('.viewer-zoom-controls'));
+    document.querySelector('[aria-label="放大图片"]').click(); await tick();
+    const imageZoom = Number(image.dataset.zoom) > 1;
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight' })); await tick();
+    const second = document.querySelector('.viewer-video video');
+    const remounted = first !== second && second?.poster.includes('riverside');
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft' })); await tick();
+    const zoomReset = Number(document.querySelector('.image-viewer-image-stage > img').dataset.zoom) === 1;
+    document.querySelectorAll('.image-viewer-thumbnails button')[10].click(); await tick();
+    const beyondNine = document.querySelector('.image-viewer-meta span').textContent === '11 / 11' && Boolean(document.querySelector('video'));
+    document.querySelector('.viewer-nav.next').click(); await tick();
+    const wraps = document.querySelector('.image-viewer-meta span').textContent === '1 / 11';
+    document.querySelector('.viewer-nav.previous').click(); await tick();
+    const errorPlayer = document.querySelector('video'); errorPlayer.dispatchEvent(new Event('error')); await tick();
+    const errorExplained = document.querySelector('.video-status')?.textContent.includes('检查档案') && !document.querySelector('video');
+    document.querySelectorAll('.image-viewer-thumbnails button')[3].click(); await tick();
+    const last = document.querySelector('video');
+    await until(() => last.currentTime > 0 && !last.paused);
+    document.querySelector('.viewer-close').click(); await tick();
+    const pausedOnClose = last.paused && !last.isConnected && !document.querySelector('.image-viewer');
+    return { mixedGrid, actualPlayback, videoControls, boundedVideo, pausedOnSwitch, imageAfterVideo, imageZoom, remounted, zoomReset, beyondNine, wraps, errorExplained, pausedOnClose };
+  })()`);
+  assert.ok(Object.values(videoRegression).every(Boolean), JSON.stringify(videoRegression));
+  await window.webContents.executeJavaScript(`document.querySelectorAll('.media-grid button')[3].click()`);
+  await waitForUI(() => window.webContents.executeJavaScript(`document.querySelector('video')?.readyState >= 2`));
+  // Click Chromium's actual fullscreen control using its UA shadow DOM bounds.
+  // This catches a dead native button even if a scripted Fullscreen API call works.
+  await forceFreshFrame(window);
+  const videoControlPoint = await window.webContents.executeJavaScript(`(() => {
+    const rect = document.querySelector('video').getBoundingClientRect();
+    return { x: Math.round(rect.right - 60), y: Math.round(rect.bottom - 35) };
+  })()`);
+  window.webContents.sendInputEvent({ type: "mouseMove", ...videoControlPoint });
+  await new Promise(resolve => setTimeout(resolve, 180));
+  window.webContents.debugger.attach("1.3");
+  try {
+    const { root } = await window.webContents.debugger.sendCommand("DOM.getDocument", { depth: -1, pierce: true });
+    const findFullscreen = (node) => {
+      if (node.attributes?.some(value => value === "-webkit-media-controls-fullscreen-button")) return node;
+      for (const child of [...(node.children || []), ...(node.shadowRoots || [])]) {
+        const found = findFullscreen(child); if (found) return found;
+      }
+      return null;
+    };
+    const button = findFullscreen(root);
+    assert.ok(button, "native video fullscreen control must exist");
+    const { model } = await window.webContents.debugger.sendCommand("DOM.getBoxModel", { nodeId: button.nodeId });
+    const x = Math.round((model.border[0] + model.border[4]) / 2);
+    const y = Math.round((model.border[1] + model.border[5]) / 2);
+    window.webContents.sendInputEvent({ type: "mouseMove", x, y });
+    window.webContents.sendInputEvent({ type: "mouseDown", x, y, button: "left", clickCount: 1 });
+    window.webContents.sendInputEvent({ type: "mouseUp", x, y, button: "left", clickCount: 1 });
+  } finally { window.webContents.debugger.detach(); }
+  await waitForUI(() => window.webContents.executeJavaScript(`document.fullscreenElement === document.querySelector('video')`));
+  await waitForUI(async () => window.isFullScreen());
+  window.webContents.sendInputEvent({ type: "keyDown", keyCode: "Escape" });
+  window.webContents.sendInputEvent({ type: "keyUp", keyCode: "Escape" });
+  await waitForUI(() => window.webContents.executeJavaScript(`!document.fullscreenElement`));
+  assert.equal(await window.webContents.executeJavaScript(`Boolean(document.querySelector('.image-viewer'))`), true, "Escape exits fullscreen before closing the viewer");
+  await waitForUI(async () => !window.isFullScreen());
+  process.stdout.write("Electron native video fullscreen button, window state and Escape exit passed\n");
+  if (process.env.QZONE_VISUAL_CAPTURE_DIR) {
+    await forceFreshFrame(window);
+    fs.writeFileSync(path.join(process.env.QZONE_VISUAL_CAPTURE_DIR, "mixed-media-viewer.png"), (await capturePageWithRetry(window)).toPNG());
+  }
+  process.stdout.write(`Electron archive race, comment search and mixed media regression passed: ${JSON.stringify(videoRegression)}\n`);
 
   process.stdout.write("Electron smoke passed\n");
   window.destroy();

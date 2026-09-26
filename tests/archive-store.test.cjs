@@ -326,7 +326,82 @@ test("successful parser migration keeps the old records in diagnostics and commi
   const committedManifest = await readJson(manifestPath);
   const entries = await store.readEntries();
   const previousDirectory = path.join(rootPath, ...transaction.quarantineRelativePath.split("/"), "previous");
-  assert.equal(committedManifest.collection.parserVersion, 7);
+  assert.equal(committedManifest.collection.parserVersion, 10);
   assert.deepEqual(entries.map((entry) => entry.text).sort(), ["新解析正文", "本轮未返回但必须保留"].sort());
   assert.equal((await fs.readdir(previousDirectory)).length, 2);
+});
+
+
+test("download metadata does not create false revisions and missing video covers are retried", async (context) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "qzone-video-incremental-"));
+  context.after(() => fs.rm(root, { recursive: true, force: true }));
+  const store = new ArchiveStore(root);
+  await store.initialize({ ownerUin: "12345678" });
+  const source = { sourceId: "video-stable", createdAt: "2026-09-05T00:00:00.000Z", type: "post", text: "", media: [{ kind: "video", sourceUrl: "https://photovideo.photo.qq.com/a.mp4", posterSourceUrl: "https://qpic.cn/a.jpg" }] };
+  const original = await store.writeMedia({ sourceUrl: source.media[0].sourceUrl, contentType: "video/mp4", bytes: Buffer.from("video") });
+  const poster = await store.writeMedia({ sourceUrl: source.media[0].posterSourceUrl, contentType: "image/jpeg", bytes: Buffer.from("poster") });
+  await store.writeEntry({ ...source, media: [{ ...source.media[0], localPath: original.relativePath, contentType: "video/mp4", size: 5, posterLocalPath: poster.relativePath, posterContentType: "image/jpeg", posterSize: 6 }] });
+  assert.equal((await store.inspectEntry(source, { includeMedia: true })).change, "skipped");
+  assert.equal((await store.inspectEntry({ ...source, links: [{ url: "https://b23.tv/changed", label: "新链接" }] }, { includeMedia: true })).change, "updated");
+  await fs.unlink(path.join(root, poster.relativePath));
+  assert.equal((await store.inspectEntry(source, { includeMedia: true })).change, "updated");
+  assert.equal((await store.inspectEntry(source, { includeMedia: false })).change, "skipped");
+  const report = await store.repairIntegrity();
+  assert.ok(report);
+  const repaired = (await store.readEntries())[0];
+  assert.equal(repaired.media[0].posterLocalPath, null);
+  assert.equal(await store.hasPendingMedia(), true);
+  assert.equal((await store.inspectEntry(source, { includeMedia: true })).change, "updated");
+});
+
+test("streamed media commits complete bytes atomically and cleans failed temporary files", async (context) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "qzone-video-stream-"));
+  context.after(() => fs.rm(root, { recursive: true, force: true }));
+  const store = new ArchiveStore(root);
+  await store.initialize({ ownerUin: "12345678" });
+  const metadata = { sourceUrl: "https://photovideo.photo.qq.com/stream.mp4", contentType: "video/mp4" };
+  const stored = await store.writeMediaStream(metadata, async (write) => {
+    await write(Buffer.from("first"));
+    assert.equal(await store.getStoredMedia(metadata.sourceUrl), null);
+    await write(Buffer.from("second"));
+  });
+  assert.equal(stored.size, 11);
+  assert.equal(await fs.readFile(path.join(root, stored.relativePath), "utf8"), "firstsecond");
+  await assert.rejects(() => store.writeMediaStream(metadata, async (write) => {
+    await write(Buffer.from("incomplete"));
+    throw new Error("cancelled");
+  }), /cancelled/);
+  assert.equal(await fs.readFile(path.join(root, stored.relativePath), "utf8"), "firstsecond");
+  assert.deepEqual((await fs.readdir(path.join(root, "media/files"))).filter((name) => name.endsWith(".tmp")), []);
+  assert.equal((await store.getStoredMedia(metadata.sourceUrl)).size, 11);
+  await fs.truncate(path.join(root, stored.relativePath), 1);
+  assert.equal(await store.getStoredMedia(metadata.sourceUrl), null);
+});
+
+test("media cache rejects a tampered path outside its archive", async (context) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "qzone-cache-path-"));
+  context.after(() => fs.rm(root, { recursive: true, force: true }));
+  const store = new ArchiveStore(path.join(root, "archive"));
+  await store.initialize({ ownerUin: "12345678" });
+  await fs.writeFile(path.join(root, "private.txt"), "private");
+  const sourceUrl = "https://qpic.cn/cache.jpg";
+  const stored = await store.writeMedia({ sourceUrl, contentType: "image/jpeg", bytes: Buffer.from("image") });
+  stored.relativePath = "../private.txt";
+  assert.equal(await store.getStoredMedia(sourceUrl), null);
+});
+
+
+test("tampered index record paths are rebuilt from archive-local entries", async (context) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "qzone-index-path-"));
+  context.after(() => fs.rm(root, { recursive: true, force: true }));
+  const store = new ArchiveStore(path.join(root, "archive"));
+  await store.initialize({ ownerUin: "12345678" });
+  await store.writeEntry({ sourceId: "safe", type: "post", text: "合法档案" });
+  await store.flushIndexes();
+  await fs.writeFile(path.join(root, "private.json"), JSON.stringify({ sourceId: "private", text: "不得读取" }));
+  const index = await readJson(store.entryIndexPath());
+  Object.values(index.items)[0].fileName = "../../private.json";
+  await atomicWriteJson(store.entryIndexPath(), index);
+  const page = await new ArchiveStore(store.rootPath).readEntriesPage();
+  assert.deepEqual(page.entries.map(entry => entry.sourceId), ["safe"]);
 });

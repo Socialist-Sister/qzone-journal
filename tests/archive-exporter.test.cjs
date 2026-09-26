@@ -155,3 +155,29 @@ test("DOCX export produces an OOXML package with Chinese archive content", async
   assert.ok(output.length > 5000);
   assert.match(output.toString("binary"), /word\/document\.xml/);
 });
+
+
+test("video export describes resolved posters accurately and retains counts when media is omitted", async () => {
+  const entries = [{ sourceId: "mixed", type: "post", text: "", media: [
+    { kind: "image", localPath: "photo.jpg", contentType: "image/jpeg" },
+    { kind: "video", localPath: "video.mp4", contentType: "video/mp4" },
+  ] }];
+  const build = (media) => buildExportModel({ entries, options: { media } });
+  const html = await renderHtmlExport({ model: build("original"), archiveRoot: "unused", mediaResolver: async () => ({ data: ONE_PIXEL_PNG, mime: "image/png" }) });
+  assert.match(html, /未取得可导出的封面/);
+  assert.doesNotMatch(html, /显示视频封面/);
+  const omitted = build("omit");
+  assert.equal(omitted.counts.videos, 1);
+  const omittedHtml = await renderHtmlExport({ model: omitted, archiveRoot: "unused" });
+  assert.match(omittedHtml, /已选择不包含媒体/);
+  assert.doesNotMatch(omittedHtml, /<img|<video/);
+});
+
+test("date exports compare actual instants and filtered exports include comment matches", () => {
+  const createdAt = new Date(2026, 8, 5, 0, 30).toISOString();
+  const entries = [{ sourceId: "midnight", type: "post", createdAt, text: "正文", comments: [{ authorName: "朋友", text: "独特评论关键词" }] }];
+  const dateModel = buildExportModel({ entries, options: { scope: "dates", dateFrom: "2026-09-05", dateTo: "2026-09-05" } });
+  assert.equal(dateModel.counts.entries, 1);
+  const searchModel = buildExportModel({ entries, options: { scope: "filtered", query: "独特评论关键词" } });
+  assert.equal(searchModel.counts.entries, 1);
+});

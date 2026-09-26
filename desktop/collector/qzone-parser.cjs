@@ -56,11 +56,14 @@ function decodeEscapedHtml(value) {
 }
 
 function normalizeQzoneMentions(value) {
-  return String(value || "").replace(/@\{([^{}\r\n]*)\}/g, (_match, fields) => {
+  const source = String(value || "");
+  return source.replace(/@\{([^{}\r\n]*)\}/g, (match, fields, offset) => {
     const nickname = String(fields)
       .match(/(?:^|,)\s*nick\s*:\s*([\s\S]*?)(?=,\s*(?:uin|who|auto)\s*:|$)/i)?.[1]
       ?.trim();
-    return nickname ? `@${nickname}` : "@QQ好友";
+    const nextCharacter = source.slice(offset + match.length, offset + match.length + 1);
+    const needsSpace = Boolean(nextCharacter) && !/[\s,，.。!?！？:：;；、)）\]】}]/.test(nextCharacter);
+    return `${nickname ? `@${nickname}` : "@QQ好友"}${needsSpace ? " " : ""}`;
   });
 }
 
@@ -93,7 +96,7 @@ function normalizeMediaUrl(value) {
   if (candidate.startsWith("http://")) candidate = `https://${candidate.slice(7)}`;
   try {
     const parsed = new URL(candidate);
-    if (parsed.protocol !== "https:") return "";
+    if (parsed.protocol !== "https:" || parsed.username || parsed.password || (parsed.port && parsed.port !== "443")) return "";
     const host = parsed.hostname.toLowerCase();
     const allowed = hostMatches(host, "qpic.cn")
       || hostMatches(host, "photo.store.qq.com")
@@ -112,7 +115,7 @@ function normalizeExternalUrl(value) {
   if (candidate.startsWith("http://")) candidate = `https://${candidate.slice(7)}`;
   try {
     const parsed = new URL(candidate);
-    if (parsed.protocol !== "https:") return "";
+    if (parsed.protocol !== "https:" || parsed.username || parsed.password || (parsed.port && parsed.port !== "443")) return "";
     const host = parsed.hostname.toLowerCase();
     if (hostMatches(host, "qpic.cn") || hostMatches(host, "photo.store.qq.com") || hostMatches(host, "photo.qq.com")) return "";
     if (host === "c.pc.qq.com" || host === "url.cn") {
@@ -155,26 +158,65 @@ function collectObjectUrls(value, result = new Map(), depth = 0) {
   return result;
 }
 
-function emotionPictures(rawItem) {
-  const media = new Map();
-  const addPictures = (pictures) => {
-    for (const picture of Array.isArray(pictures) ? pictures : []) {
-      if (!picture || typeof picture !== "object") continue;
-      const sourceUrl = [picture.url1, picture.url3, picture.url2, picture.url, picture.pic_url]
-        .map(normalizeMediaUrl)
-        .find(Boolean);
-      if (!sourceUrl || media.has(sourceUrl)) continue;
-      media.set(sourceUrl, {
-        kind: "image",
-        sourceUrl,
-        width: Number(picture.width || picture.w || 0) || undefined,
-        height: Number(picture.height || picture.h || 0) || undefined,
-      });
-    }
+function videoDimensions(video, fallback = {}) {
+  return {
+    width: Number(video?.width || video?.w || fallback?.width || fallback?.w || 0) || undefined,
+    height: Number(video?.height || video?.h || fallback?.height || fallback?.h || 0) || undefined,
   };
-  addPictures(rawItem?.pic);
-  addPictures(rawItem?.rt_con?.pic);
-  return [...media.values()];
+}
+
+function emotionMedia(rawItem) {
+  const containers = [rawItem, rawItem?.rt_con].filter(Boolean);
+  const aliases = new Map();
+  const videoRecords = new WeakMap();
+  const pictureUrls = (picture) => [picture?.url1, picture?.url3, picture?.url2, picture?.url, picture?.pic_url].map(normalizeMediaUrl).filter(Boolean);
+  const registerVideo = (video, fallback = {}) => {
+    if (!video || typeof video !== "object") return;
+    const sourceUrl = [video.url3, video.video_url, video.videoUrl, video.play_url, video.playUrl, video.url].map(normalizeMediaUrl).find(Boolean) || "";
+    const posterUrls = [video.pic_url, video.cover_url, video.coverUrl, video.url1, video.thumbnailUrl, ...pictureUrls(fallback)]
+      .map(normalizeMediaUrl).filter((url) => url && url !== sourceUrl);
+    if (!sourceUrl && !posterUrls.length) return;
+    const videoId = String(video.video_id || video.videoId || video.vid || fallback.video_id || "").slice(0, 200);
+    const keys = [videoId && `id:${videoId}`, sourceUrl, ...posterUrls].filter(Boolean);
+    const previous = keys.map((key) => aliases.get(key)).find(Boolean);
+    const record = previous || { kind: "video", sourceUrl: "", posterSourceUrl: "" };
+    record.sourceUrl ||= sourceUrl;
+    record.posterSourceUrl ||= posterUrls[0] || "";
+    record.videoId ||= videoId || undefined;
+    record.durationMs ||= Number(video.duration || video.duration_ms || video.durationMs || 0) || undefined;
+    const dimensions = videoDimensions(video, fallback);
+    record.width ||= dimensions.width;
+    record.height ||= dimensions.height;
+    for (const key of keys) aliases.set(key, record);
+    videoRecords.set(video, record);
+  };
+  // Register all aliases first: pic[] may contain only a thumbnail while video[]
+  // holds the playable source. A video replaces its cover in that exact pic slot.
+  for (const container of containers) {
+    for (const video of Array.isArray(container.video) ? container.video : []) registerVideo(video);
+    for (const picture of Array.isArray(container.pic) ? container.pic : []) registerVideo(picture?.video_info, picture);
+  }
+  const media = [];
+  const seen = new Set();
+  const emit = (item) => {
+    if (!item) return;
+    const key = item.kind === "video" ? item : item.sourceUrl;
+    if (seen.has(key)) return;
+    seen.add(key);
+    media.push(item);
+  };
+  for (const container of containers) {
+    for (const picture of Array.isArray(container.pic) ? container.pic : []) {
+      if (!picture || typeof picture !== "object") continue;
+      const urls = pictureUrls(picture);
+      const video = videoRecords.get(picture.video_info) || urls.map((url) => aliases.get(url)).find(Boolean);
+      if (video) emit(video);
+      else if (!picture.video_info && urls.length) emit({ kind: "image", sourceUrl: urls[0], ...videoDimensions(picture) });
+    }
+    // Video-only posts and APIs without cover slots still retain all native videos.
+    for (const video of Array.isArray(container.video) ? container.video : []) emit(videoRecords.get(video));
+  }
+  return media;
 }
 
 function emotionComments(rawItem) {
@@ -285,7 +327,7 @@ function parseEmotionItem(rawItem, ownerUin) {
   const text = [ownText, forwardedText && forwardedText !== ownText ? `转发内容：${forwardedText}` : ""]
     .filter(Boolean)
     .join("\n\n");
-  const media = emotionPictures(rawItem);
+  const media = emotionMedia(rawItem);
   const links = [...collectObjectUrls(rawItem).values()];
   if (!text && !media.length && !links.length) return null;
   const comments = emotionComments(rawItem);
@@ -312,7 +354,7 @@ function parseEmotionItem(rawItem, ownerUin) {
     },
     sourceMeta: {
       adapter: "emotion_cgi_msglist_v6",
-      parserVersion: 7,
+      parserVersion: 10,
       authorNickname: stripHtml(rawItem?.name || rawItem?.nickname || ""),
       sourceName: stripHtml(rawItem?.source_name || "") || null,
       commentCountReported: commentMetric.reported,
@@ -395,20 +437,70 @@ function extractExternalLinks(html) {
 function extractMedia(html) {
   const postHtml = String(html || "").split(/<[^>]+class=["'][^"']*mod-comments[^"']*["']/i)[0];
   const media = new Map();
-  const add = (url, kind = "image") => {
+  const videoPosters = new Set();
+  const positions = new Map();
+  const add = (url, position, kind = "image") => {
     const normalized = normalizeMediaUrl(url);
-    if (normalized && !media.has(normalized)) media.set(normalized, { kind, sourceUrl: normalized });
+    if (normalized && !videoPosters.has(normalized) && !media.has(normalized)) {
+      media.set(normalized, { kind, sourceUrl: normalized });
+      positions.set(normalized, position);
+    }
   };
+  const addVideo = (videoUrl, posterUrl, attrs = "", position = 0) => {
+    const sourceUrl = normalizeMediaUrl(videoUrl);
+    const posterSourceUrl = normalizeMediaUrl(posterUrl);
+    if (!sourceUrl && !posterSourceUrl) return;
+    if (posterSourceUrl) videoPosters.add(posterSourceUrl);
+    const key = `video:${sourceUrl || posterSourceUrl}`;
+    if (media.has(key)) return;
+    positions.set(key, position);
+    media.set(key, {
+      kind: "video",
+      sourceUrl,
+      posterSourceUrl,
+      width: Number(attribute(attrs, "width")) || undefined,
+      height: Number(attribute(attrs, "height")) || undefined,
+    });
+  };
+  for (const match of postHtml.matchAll(/<video\b([^>]*)>[\s\S]*?<\/video>|<video\b([^>]*)\/?\s*>/gi)) {
+    const attrs = match[1] || match[2] || "";
+    const body = match[0];
+    addVideo(
+      attribute(attrs, "src") || attribute(attrs, "data-src") || body.match(/https?:\/\/[^\s<>'"\\]+\.mp4[^\s<>'"\\]*/i)?.[0],
+      attribute(attrs, "poster") || attribute(attrs, "data-poster"),
+      attrs,
+      match.index,
+    );
+  }
+  for (const match of postHtml.matchAll(/<(?:a|div)\b([^>]*class=["'][^"']*video[^"']*["'][^>]*)>([\s\S]*?)<\/(?:a|div)>/gi)) {
+    const attrs = match[1];
+    const body = match[2];
+    const imageAttrs = body.match(/<img\b([^>]*)>/i)?.[1] || "";
+    const linkedUrl = attribute(attrs, "href") || attribute(body.match(/<a\b([^>]*)>/i)?.[1], "href");
+    if (normalizeExternalUrl(linkedUrl)) {
+      const thumbnail = normalizeMediaUrl(attribute(imageAttrs, "src") || attribute(imageAttrs, "trueSrc"));
+      if (thumbnail) videoPosters.add(thumbnail);
+      continue;
+    }
+    addVideo(
+      ["video", "video-url", "play-url", "src", "url"].map((name) => attribute(attrs, name)).find((url) => /\.mp4(?:\?|$)/i.test(url))
+        || decodeHtmlEntities(`${attrs} ${body}`).match(/https?:\/\/[^\s<>'"\\]+\.mp4[^\s<>'"\\]*/i)?.[0],
+      attribute(attrs, "poster") || attribute(attrs, "cover") || attribute(imageAttrs, "src") || attribute(imageAttrs, "trueSrc"),
+      attrs,
+      match.index,
+    );
+  }
   // data-pickey points at the original photo while the nested img src is a
   // rendered thumbnail of the same photo. Prefer originals for the whole post.
-  for (const match of postHtml.matchAll(/data-pickey=["'][^,"']+,([^"']+)["']/gi)) add(match[1]);
-  if (media.size) return [...media.values()];
+  for (const match of postHtml.matchAll(/data-pickey=["'][^,"']+,([^"']+)["']/gi)) add(match[1], match.index);
+  const ordered = () => [...media.entries()].sort(([a], [b]) => positions.get(a) - positions.get(b)).map(([, item]) => item);
+  if ([...media.values()].some((item) => item.kind === "image")) return ordered();
   for (const match of postHtml.matchAll(/<img\b([^>]*)>/gi)) {
     const attrs = match[1];
     if (/avatar|qlogo|emoji|emoticon|icon/gi.test(attrs) && !/img-item|photo|qpic/gi.test(attrs)) continue;
-    add(attribute(attrs, "original") || attribute(attrs, "trueSrc") || attribute(attrs, "src") || attribute(attrs, "url"));
+    add(attribute(attrs, "original") || attribute(attrs, "trueSrc") || attribute(attrs, "src") || attribute(attrs, "url"), match.index);
   }
-  return [...media.values()];
+  return ordered();
 }
 
 function parseComments(html) {
@@ -554,7 +646,7 @@ function parseFeedItem(rawItem, ownerUin) {
     metrics: { commentCount, likeCount },
     sourceMeta: {
       adapter: "feeds3_html_more",
-      parserVersion: 7,
+      parserVersion: 10,
       appid,
       typeId,
       isForward: typeId === "5" || Boolean(originalSourceId),

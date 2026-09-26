@@ -2,9 +2,9 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { createHash, randomUUID } = require("node:crypto");
 const { ARCHIVE_SCHEMA_VERSION, createManifest, isoNow, normalizeArchiveEntry } = require("./schema.cjs");
-const COLLECTOR_PARSER_VERSION = 7;
+const COLLECTOR_PARSER_VERSION = 10;
 const PARSER_MIGRATION_STATE = "parser-migration-transaction.json";
-const ENTRY_INDEX_VERSION = 1;
+const ENTRY_INDEX_VERSION = 2;
 
 async function listJsonNames(directory) {
   try {
@@ -61,8 +61,12 @@ function entryContentFingerprint(entry) {
     location: entry?.location ? String(entry.location) : null,
     visibility: String(entry?.visibility || "unknown"),
     media: (Array.isArray(entry?.media) ? entry.media : []).map((item) => ({
+      kind: String(item?.kind || "image"),
       sourceUrl: String(item?.sourceUrl || ""),
-      type: String(item?.type || item?.contentType || ""),
+      posterSourceUrl: String(item?.posterSourceUrl || ""),
+      durationMs: Number(item?.durationMs) || 0,
+      width: Number(item?.width) || 0,
+      height: Number(item?.height) || 0,
     })),
     comments: (Array.isArray(entry?.comments) ? entry.comments : []).map((item) => ({
       authorName: String(item?.authorName || item?.author || item?.name || ""),
@@ -71,7 +75,8 @@ function entryContentFingerprint(entry) {
     likes: (Array.isArray(entry?.likes) ? entry.likes : []).map((item) => ({
       name: String(item?.name || item?.nickname || item || ""),
     })),
-    metrics: entry?.metrics && typeof entry.metrics === "object" ? entry.metrics : {},
+    links: (Array.isArray(entry?.links) ? entry.links : []).map((link) => ({ url: String(link.url || ""), label: String(link.label || "") })),
+    metrics: { commentCount: Number(entry?.metrics?.commentCount) || 0, likeCount: Number(entry?.metrics?.likeCount) || 0 },
   };
   return createHash("sha256").update(JSON.stringify(stableValue(projection))).digest("hex");
 }
@@ -84,11 +89,14 @@ function extensionForMedia(contentType, sourceUrl) {
     "image/png": ".png",
     "image/svg+xml": ".svg",
     "image/webp": ".webp",
+    "video/mp4": ".mp4",
+    "video/quicktime": ".mov",
+    "video/x-m4v": ".m4v",
   };
   if (byType[contentType]) return byType[contentType];
   try {
     const extension = path.extname(new URL(sourceUrl).pathname).toLowerCase();
-    return /^\.(?:avif|gif|jpe?g|png|svg|webp)$/.test(extension) ? extension.replace(".jpeg", ".jpg") : ".bin";
+    return /^\.(?:avif|gif|jpe?g|m4v|mov|mp4|png|svg|webp)$/.test(extension) ? extension.replace(".jpeg", ".jpg") : ".bin";
   } catch {
     return ".bin";
   }
@@ -116,7 +124,7 @@ function officialMetric(value, visibleCount) {
 function entryIndexItem(entry, fileName) {
   const comments = Array.isArray(entry?.comments) ? entry.comments : [];
   const likes = Array.isArray(entry?.likes) ? entry.likes : [];
-  const media = Array.isArray(entry?.media) ? entry.media.filter((item) => item?.localPath) : [];
+  const media = Array.isArray(entry?.media) ? entry.media.filter((item) => item?.localPath || item?.posterLocalPath) : [];
   const searchable = [
     entry?.title,
     entry?.text,
@@ -130,7 +138,8 @@ function entryIndexItem(entry, fileName) {
     createdAt: String(entry?.createdAt || ""),
     searchText: searchable,
     media: media.length,
-    mediaBytes: media.reduce((total, item) => total + (Number(item?.size) || 0), 0),
+    pendingMedia: (Array.isArray(entry?.media) ? entry.media : []).some((item) => (item?.sourceUrl && !item.localPath) || (item?.posterSourceUrl && !item.posterLocalPath)),
+    mediaBytes: media.reduce((total, item) => total + (Number(item?.size) || 0) + (Number(item?.posterSize) || 0), 0),
     comments: officialMetric(entry?.metrics?.commentCount, comments.length),
     likes: officialMetric(entry?.metrics?.likeCount, likes.length),
     visibleComments: comments.length,
@@ -248,18 +257,20 @@ class ArchiveStore {
   }
 
   async loadEntryIndex({ verify = false } = {}) {
+    const firstRead = !this.entryIndexPromise;
     if (!this.entryIndexPromise) {
       this.entryIndexPromise = readJson(this.entryIndexPath(), null).then((index) => {
-        this.entryIndex = index?.version === ENTRY_INDEX_VERSION && index.items && typeof index.items === "object"
-          ? index
-          : null;
+        const validItems = index?.items && typeof index.items === "object" && !Array.isArray(index.items)
+          && Object.entries(index.items).every(([name, item]) => path.basename(name) === name && name.endsWith(".json")
+            && item?.fileName === name && typeof item.searchText === "string" && typeof item.createdAt === "string");
+        this.entryIndex = index?.version === ENTRY_INDEX_VERSION && validItems ? index : null;
         return this.entryIndex;
       });
     }
     let index = await this.entryIndexPromise;
     if (!index) return this.rebuildEntryIndex();
-    if (verify) {
-      const interruptedWrite = await fileExists(this.entryIndexDirtyPath());
+    if (verify || firstRead) {
+      const interruptedWrite = !this.entryIndexDirty && await fileExists(this.entryIndexDirtyPath());
       const names = await listJsonNames(path.join(this.rootPath, "records", "entries"));
       const indexedNames = Object.keys(index.items);
       if (interruptedWrite || names.length !== indexedNames.length || names.some((name) => !index.items[name])) {
@@ -526,18 +537,19 @@ class ArchiveStore {
     const entry = normalizeArchiveEntry(mergedInput);
     entry.contentFingerprint = entryContentFingerprint(entry);
     const existingFingerprint = existing
-      ? String(existing.contentFingerprint || entryContentFingerprint(existing))
+      ? entryContentFingerprint(existing)
       : "";
     let existingMediaMissing = false;
-    for (const media of Array.isArray(existing?.media) ? existing.media : []) {
-      if (!media?.localPath) {
-        if (options.includeMedia !== false && media?.sourceUrl) existingMediaMissing = true;
-        continue;
-      }
-      const mediaPath = path.resolve(this.rootPath, ...String(media.localPath).split("/"));
-      if (!mediaPath.startsWith(this.rootPath + path.sep) || !(await fileExists(mediaPath))) {
-        existingMediaMissing = true;
-        break;
+    if (options.includeMedia !== false) {
+      for (const media of Array.isArray(existing?.media) ? existing.media : []) {
+        for (const [sourceField, pathField] of [["sourceUrl", "localPath"], ["posterSourceUrl", "posterLocalPath"]]) {
+          if (!media?.[sourceField]) continue;
+          if (!await this.safeStoredMediaPath(media[pathField])) {
+            existingMediaMissing = true;
+            break;
+          }
+        }
+        if (existingMediaMissing) break;
       }
     }
     return {
@@ -553,7 +565,7 @@ class ArchiveStore {
     entry.contentFingerprint = entryContentFingerprint(entry);
     const filePath = path.join(this.rootPath, "records", "entries", entryFileName(entry));
     const existing = await readJson(filePath);
-    if (existing && String(existing.contentFingerprint || entryContentFingerprint(existing)) !== entry.contentFingerprint) {
+    if (existing && entryContentFingerprint(existing) !== entry.contentFingerprint) {
       const revisionDirectory = path.join(this.rootPath, "diagnostics", "revisions", path.basename(filePath, ".json"));
       const revisionName = isoNow().replace(/[:.]/g, "-") + ".json";
       await atomicWriteJson(path.join(revisionDirectory, revisionName), existing);
@@ -590,16 +602,51 @@ class ArchiveStore {
     return index.items[id];
   }
 
+  async safeStoredMediaPath(relativePath) {
+    if (!relativePath || path.isAbsolute(String(relativePath))) return null;
+    const target = path.resolve(this.rootPath, ...String(relativePath).split("/"));
+    if (!target.startsWith(this.rootPath + path.sep)) return null;
+    try {
+      const [realRoot, realTarget, stat] = await Promise.all([fs.realpath(this.rootPath), fs.realpath(target), fs.stat(target)]);
+      return stat.isFile() && stat.size > 0 && realTarget.startsWith(realRoot + path.sep) ? target : null;
+    } catch { return null; }
+  }
+
   async getStoredMedia(sourceUrl) {
     const id = createHash("sha256").update(String(sourceUrl)).digest("hex");
     const index = await this.loadMediaIndex();
     const item = index?.items?.[id];
-    if (!item?.relativePath) return null;
+    const target = await this.safeStoredMediaPath(item?.relativePath);
+    if (!target) return null;
+    const stat = await fs.stat(target).catch(() => null);
+    return stat && stat.size === Number(item.size) ? item : null;
+  }
+
+  async writeMediaStream({ sourceUrl, contentType, finalUrl }, consume) {
+    const id = createHash("sha256").update(String(sourceUrl)).digest("hex");
+    const relativePath = path.posix.join("media", "files", `${id}${extensionForMedia(contentType, finalUrl || sourceUrl)}`);
+    const filePath = path.join(this.rootPath, ...relativePath.split("/"));
+    await fs.mkdir(path.dirname(filePath), { recursive: true });
+    const temporaryPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
+    let handle;
+    let size = 0;
     try {
-      await fs.access(path.join(this.rootPath, ...String(item.relativePath).split("/")));
-      return item;
-    } catch {
-      return null;
+      handle = await fs.open(temporaryPath, "wx", 0o600);
+      await consume(async (chunk) => {
+        await handle.writeFile(chunk);
+        size += chunk.length;
+      });
+      if (!size) throw new Error("媒体响应为空");
+      await handle.close();
+      handle = null;
+      await fs.rename(temporaryPath, filePath);
+      const index = await this.loadMediaIndex();
+      index.items[id] = { sourceUrl: String(sourceUrl), finalUrl: String(finalUrl || sourceUrl), relativePath, contentType, size, storedAt: isoNow() };
+      this.mediaIndexDirty = true;
+      return index.items[id];
+    } finally {
+      await handle?.close().catch(() => undefined);
+      await fs.rm(temporaryPath, { force: true }).catch(() => undefined);
     }
   }
 
@@ -615,7 +662,7 @@ class ArchiveStore {
     } catch (error) {
       if (error?.code !== "ENOENT") throw error;
     }
-    const entries = await Promise.all(names.filter((name) => name.endsWith(".json")).map((name) => readJson(path.join(directory, name))));
+    const entries = await mapWithConcurrency(names.filter((name) => name.endsWith(".json")), 32, (name) => readJson(path.join(directory, name)));
     return entries.filter(Boolean);
   }
 
@@ -654,6 +701,10 @@ class ArchiveStore {
     };
   }
 
+  async hasPendingMedia() {
+    return Object.values((await this.loadEntryIndex()).items).some((item) => item.pendingMedia);
+  }
+
   async summarize() {
     const totals = (await this.loadEntryIndex()).totals;
     return {
@@ -689,13 +740,19 @@ class ArchiveStore {
       }
       report.checkedEntries += 1;
       for (const media of Array.isArray(entry.media) ? entry.media : []) {
-        if (!media?.localPath) continue;
-        const localPath = String(media.localPath);
-        const mediaPath = path.resolve(this.rootPath, ...localPath.split("/"));
-        if (!mediaPath.startsWith(this.rootPath + path.sep)) {
-          report.unsafeMedia.push({ fileName: name, localPath });
-        } else if (!(await fileExists(mediaPath))) {
-          report.missingMedia.push({ fileName: name, localPath });
+        for (const field of ["localPath", "posterLocalPath"]) {
+          if (!media?.[field]) continue;
+          const localPath = String(media[field]);
+          const mediaPath = path.resolve(this.rootPath, ...localPath.split("/"));
+          if (!mediaPath.startsWith(this.rootPath + path.sep)) {
+            report.unsafeMedia.push({ fileName: name, localPath, field });
+          } else {
+            const stat = await fs.stat(mediaPath).catch(() => null);
+            const expectedSize = Number(media[field === "posterLocalPath" ? "posterSize" : "size"]) || 0;
+            if (!stat?.isFile() || !await this.safeStoredMediaPath(localPath) || (expectedSize > 0 && stat.size !== expectedSize)) {
+              report.missingMedia.push({ fileName: name, localPath, field });
+            }
+          }
         }
       }
     }
@@ -713,6 +770,7 @@ class ArchiveStore {
     const repairId = isoNow().replace(/[:.]/g, "-");
     const quarantineDirectory = path.join(this.rootPath, "diagnostics", "integrity", repairId, "corrupt-entries");
     await fs.mkdir(quarantineDirectory, { recursive: true });
+    await this.markEntryIndexDirty();
     let quarantinedEntries = 0;
     for (const item of report.corruptEntries) {
       const source = path.join(entriesDirectory, item.fileName);
@@ -721,17 +779,25 @@ class ArchiveStore {
       quarantinedEntries += 1;
     }
 
-    const affectedFiles = new Set([...report.missingMedia, ...report.unsafeMedia].map((item) => item.fileName));
+    const issuesByFile = new Map();
+    for (const issue of [...report.missingMedia, ...report.unsafeMedia]) {
+      if (!issuesByFile.has(issue.fileName)) issuesByFile.set(issue.fileName, []);
+      issuesByFile.get(issue.fileName).push(issue);
+    }
+    const affectedFiles = new Set(issuesByFile.keys());
     let repairedEntries = 0;
     for (const fileName of affectedFiles) {
       const filePath = path.join(entriesDirectory, fileName);
       const entry = await readJson(filePath);
       if (!entry) continue;
       entry.media = (Array.isArray(entry.media) ? entry.media : []).map((media) => {
-        const issue = [...report.missingMedia, ...report.unsafeMedia]
-          .some((item) => item.fileName === fileName && item.localPath === String(media?.localPath || ""));
-        if (!issue) return media;
-        const repaired = { ...media, localPath: null, size: 0, downloadError: "本地媒体缺失，等待下次备份重新下载" };
+        const issues = issuesByFile.get(fileName);
+        const brokenOriginal = issues.some((item) => item.field !== "posterLocalPath" && item.localPath === String(media?.localPath || ""));
+        const brokenPoster = issues.some((item) => item.field === "posterLocalPath" && item.localPath === String(media?.posterLocalPath || ""));
+        if (!brokenOriginal && !brokenPoster) return media;
+        const repaired = { ...media };
+        if (brokenOriginal) Object.assign(repaired, { localPath: null, size: 0, downloadError: "本地媒体缺失，等待下次备份重新下载" });
+        if (brokenPoster) Object.assign(repaired, { posterLocalPath: null, posterSize: 0, posterDownloadError: "本地视频封面缺失，等待下次备份重新下载" });
         return repaired;
       });
       entry.contentFingerprint = entryContentFingerprint(entry);

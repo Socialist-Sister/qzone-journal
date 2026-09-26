@@ -147,6 +147,18 @@ async function run() {
     assert.equal(partialCheckpoint.phase, "partial");
     assert.equal(partialCheckpoint.counts.entries, 3);
 
+    const midLikePartialRoot = path.join(rootPath, "mid-like-partial");
+    const partialDetails = await runJob({
+      ...baseJob, archiveRoot: midLikePartialRoot, jobId: "collector-mid-like-partial",
+      testEntries: [{ ...baseJob.testEntries[0], likes: [], metrics: { commentCount: 1, likeCount: 3 } }],
+      testLikeDetails: { "test-post-1": { likes: [{ name: "已保存的点赞者" }], total: 3, partial: true, partialCode: "QZONE_INTERACTION_RATE_LIMITED" } },
+    });
+    assert.equal(partialDetails.message.partialReason, "likes");
+    const partialNames = await new (require("../desktop/archive/store.cjs").ArchiveStore)(midLikePartialRoot).readEntries();
+    assert.equal(partialNames[0].likes[0].name, "已保存的点赞者");
+    assert.equal(partialNames[0].sourceMeta.likeDetailsStatus, "partial");
+    assert.equal(JSON.stringify(partialNames[0].likes).includes("uin"), false);
+
     const cookieStatus = analyzeQzoneCookies([
       { name: "uin", value: "o12345678", domain: ".qq.com" },
       { name: "p_skey", value: "secret", domain: ".qzone.qq.com" },
