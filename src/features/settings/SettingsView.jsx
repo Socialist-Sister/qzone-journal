@@ -10,7 +10,7 @@ function SettingsView({ section, onSectionChange, aiConfig, onAiConfigChange, ar
   const [anonymous, setAnonymous] = useState(readExportAnonymizePreference);
   const [notice, setNotice] = useState("");
   const [backupDirectory, setBackupDirectory] = useState("文档/空间备份");
-  const [appVersion, setAppVersion] = useState("0.7.4-alpha");
+  const [appVersion, setAppVersion] = useState("0.7.0-alpha");
   const [checkingUpdates, setCheckingUpdates] = useState(false);
   const [updateResult, setUpdateResult] = useState(null);
   const [providerEditor, setProviderEditor] = useState(null);

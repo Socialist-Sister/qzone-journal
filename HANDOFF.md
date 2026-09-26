@@ -4,6 +4,13 @@
 工作目录：`D:\ChatGPT files\qzone-journal`
 远程仓库：`https://github.com/Socialist-Sister/qzone-journal`
 
+## 公开版本编号调整（2026-09-26）
+
+- 用户要求推送并发布 `v0.7.0alpha`，按项目格式统一为 **v0.7.0-alpha**。
+- 本次发布包含已验证的最新代码（此前本地 0.7.4-alpha），不是回退到早期 0.7.0 实现。0.7.1～0.7.4 未曾发布，下面的版本号是开发过程历史记录。
+- `package.json`、界面备用版本号、README 和 CHANGELOG 已统一。标签触发 GitHub Release 工作流，先运行 `test:all`，再构建安装版、免安装版和校验元数据。
+- 发布说明见 `docs/releases/v0.7.0-alpha.md`。不包含完整相册/日志专项采集，也不宣称 Alpha 已达到 1.0 的人工兼容验收标准。
+
 ## 最新结构重构（2026-09-26，v0.7.4-alpha）
 
 - 用户反馈“测试目前没有发现异常”，明确授权重构。该反馈不替代尚未逐项确认的旧版专项验收记录。

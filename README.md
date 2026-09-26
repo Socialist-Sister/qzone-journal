@@ -3,7 +3,7 @@
 一款本地优先的 QQ 空间个人动态备份桌面应用。它通过 QQ 官方登录页面建立本机会话，将可读取的个人空间内容整理为版本化本地档案，并可接入用户自己的 OpenAI 兼容模型生成回顾。
 
 > [!WARNING]
-> 当前为 `v0.7.4-alpha` 早期测试版。QQ 空间没有面向本项目的稳定公开导出 API，采集能力可能因 QQ 页面或接口变化而失效。首次使用前请阅读下方“当前边界”，不要把它作为唯一备份。
+> 当前为 `v0.7.0-alpha` 早期测试版。QQ 空间没有面向本项目的稳定公开导出 API，采集能力可能因 QQ 页面或接口变化而失效。首次使用前请阅读下方“当前边界”，不要把它作为唯一备份。
 
 ## 已实现
 
@@ -36,10 +36,10 @@
 
 ## 安装
 
-当前工作区为 `v0.7.4-alpha`，尚未发布；本地测试包位于 `release/`。公开下载请以 [Releases](https://github.com/Socialist-Sister/qzone-journal/releases) 中实际提供的版本为准。当前构建产物：
+本次公开版本为 `v0.7.0-alpha`，下载见 [GitHub Release](https://github.com/Socialist-Sister/qzone-journal/releases/tag/v0.7.0-alpha)。发行资产包括：
 
-- `QZoneJournal-0.7.4-alpha-x64.exe`：Windows 当前用户安装版，不要求管理员权限。
-- `QZoneJournal-0.7.4-alpha-portable.zip`：解压后直接运行的免安装版。
+- `QZoneJournal-0.7.0-alpha-x64.exe`：Windows 当前用户安装版，不要求管理员权限。
+- `QZoneJournal-0.7.0-alpha-portable.zip`：解压后直接运行的免安装版。
 - `SHA256SUMS.txt`、`SBOM.cdx.json`、`THIRD_PARTY_LICENSES.json`：完整性校验、软件物料清单和生产依赖许可。
 
 当前 Alpha 安装包尚未进行商业代码签名，Windows 可能显示 SmartScreen 提示。请只从本仓库 Release 下载并核对 SHA-256。
